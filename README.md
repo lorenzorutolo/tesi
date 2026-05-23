@@ -1,2 +1,2 @@
-# tesi
-Progetto tesi 2026 SUPSI
+# ProgettoSemestre
+Progetto Semestre SUPSI 2025/26
