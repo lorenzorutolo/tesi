@@ -1,0 +1,28 @@
+# Output dei benchmark
+risultati_benchmark.csv
+
+# Claude Code config locale
+.claude/
+
+# Output graphify
+graphify-out/
+
+# Documentazione PDF
+Documentazione/
+
+# File temporanei OS
+.DS_Store
+Thumbs.db
+
+# GUI vecchia (rimossa)
+analizzatore_gui.py
+
+# Istruzioni progetto (locali)
+CLAUDE.md
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/

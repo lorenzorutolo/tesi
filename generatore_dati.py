@@ -1,67 +1,83 @@
-import os
-import math
-import requests
 import csv
 import json
+import math
+from dataclasses import dataclass, field, asdict
+from typing import Any
+
+import requests
 from datasets import load_dataset
-import numpy as np
 
 # ============================================================
-# CONFIGURAZIONI E COSTANTI
+# CONFIGURAZIONE
 # ============================================================
-NUM_TEST = 3000
-RIPETIZIONI_PER_DOMANDA = 5
-URL_OLLAMA = 'http://localhost:11434/api/generate'
-os.environ["HF_TOKEN"] = "ProgettoSemestre"
-
-
-# ============================================================
-# CLASSE CONTENITORE
-# ============================================================
-class RisultatiBenchmark:
-    def __init__(self):
-        self.tp = 0
-        self.tn = 0
-        self.fp = 0
-        self.fn = 0
-        self.risultati_per_tabella = []
-        self.dist_corrette = {}
-        self.dist_errate = {}
+NUM_TEST = 3
+RIPETIZIONI_PER_DOMANDA = 3
+URL_OLLAMA = "http://localhost:11434/api/generate"
+MODELLO = "llama3"
+DATASET_NAME = "google/boolq"
+OUTPUT_CSV = "risultati_benchmark.csv"
+TOP_LOGPROBS = 10
 
 
 # ============================================================
-# FUNZIONI DI SUPPORTO
+# STRUTTURE DATI
 # ============================================================
-def estrai_prob_da_logprobs(resp_eval: dict) -> tuple:
-    p_true = 0.0
-    p_false = 0.0
-    p_altri = 0.0
-    lista_token_grezzi = []
-
-    logprobs = resp_eval.get('logprobs', [])
-    if isinstance(logprobs, list) and len(logprobs) > 0:
-        candidati_top_k = logprobs[0].get('top_logprobs', [])
-
-        for candidato in candidati_top_k:
-            token_originale = candidato.get('token', '')
-            testo_candidato = token_originale.strip().lower()
-
-            prob_lineare = math.exp(candidato.get('logprob', -100))
-            lista_token_grezzi.append(f"'{token_originale}': {prob_lineare * 100:.8f}%")
-
-            if "true" in testo_candidato:
-                p_true += prob_lineare
-            elif "false" in testo_candidato:
-                p_false += prob_lineare
-            else:
-                p_altri += prob_lineare
-
-        return p_true, p_false, p_altri, lista_token_grezzi
-
-    return 0.0, 0.0, 0.0, []
+@dataclass
+class Alternativa:
+    domanda_alt: str
+    risposta_pulita: str
+    p_true_raw: float
+    p_false_raw: float
+    p_altri_raw: float
 
 
-def interroga_ollama(payload: dict) -> dict:
+@dataclass
+class RigaBenchmark:
+    id: int
+    domanda: str
+    reale: str
+    alternative: list[Alternativa] = field(default_factory=list)
+
+
+# ============================================================
+# PROMPT
+# ============================================================
+def prompt_risposta(testo: str, domanda: str) -> str:
+    return (
+        "You are a strict reading comprehension assistant. Read the following passage carefully.\n"
+        "Your response must be exactly one word: either 'True' or 'False'. "
+        "Do not include any explanations, introductory text, or punctuation.\n\n"
+        f"Passage:\n{testo}\n\n"
+        f"Question: {domanda}\n\n"
+        "Answer:"
+    )
+
+
+def prompt_parafrasi(domanda: str) -> str:
+    return (
+        "You are an expert linguistic assistant. Your only task is to paraphrase the given question.\n"
+        "Rewrite the question using different words or sentence structure, but keep the exact same logical meaning and intent.\n"
+        "Your response must contain ONLY the new paraphrased question. "
+        "Do not include any introductory phrases, explanations, or answers.\n\n"
+        f"Question: {domanda}\n\n"
+        "Paraphrased Question:"
+    )
+
+
+# ============================================================
+# OLLAMA
+# ============================================================
+def interroga_ollama(prompt: str, num_predict: int, logprobs: bool = False) -> dict:
+    payload: dict[str, Any] = {
+        "model": MODELLO,
+        "prompt": prompt,
+        "stream": False,
+        "options": {"num_predict": num_predict},
+        "raw": False,
+    }
+    if logprobs:
+        payload["logprobs"] = True
+        payload["top_logprobs"] = TOP_LOGPROBS
     try:
         response = requests.post(URL_OLLAMA, json=payload)
         response.raise_for_status()
@@ -71,181 +87,111 @@ def interroga_ollama(payload: dict) -> dict:
         return {}
 
 
-# ============================================================
-# LOGICA PRINCIPALE DI BENCHMARK
-# ============================================================
-def esegui_benchmark() -> RisultatiBenchmark:
-    print("Scarico o carico il dataset dalla cache...")
-    dataset = load_dataset("google/boolq")
-    dati_validazione = dataset['validation'].shuffle()
+def estrai_prob_da_logprobs(resp: dict) -> tuple[float, float, float, list[str]]:
+    logprobs = resp.get("logprobs", [])
+    if not (isinstance(logprobs, list) and logprobs):
+        return 0.0, 0.0, 0.0, []
 
-    risultati = RisultatiBenchmark()
+    p_true = p_false = p_altri = 0.0
+    token_grezzi: list[str] = []
+
+    for candidato in logprobs[0].get("top_logprobs", []):
+        token = candidato.get("token", "")
+        testo = token.strip().lower()
+        prob = math.exp(candidato.get("logprob", -100))
+        token_grezzi.append(f"'{token}': {prob * 100:.8f}%")
+
+        if "true" in testo:
+            p_true += prob
+        elif "false" in testo:
+            p_false += prob
+        else:
+            p_altri += prob
+
+    return p_true, p_false, p_altri, token_grezzi
+
+
+def classifica(p_true: float, p_false: float) -> str:
+    if p_true > p_false:
+        return "true"
+    if p_false > p_true:
+        return "false"
+    return "altro"
+
+
+# ============================================================
+# BENCHMARK
+# ============================================================
+def elabora_domanda(id_domanda: int, riga_dataset: dict) -> RigaBenchmark:
+    testo = riga_dataset["passage"]
+    domanda_originale = riga_dataset["question"]
+    riga = RigaBenchmark(
+        id=id_domanda,
+        domanda=domanda_originale,
+        reale=str(riga_dataset["answer"]).lower(),
+    )
+
+    domanda_corrente = domanda_originale
+    for rep in range(RIPETIZIONI_PER_DOMANDA):
+        resp = interroga_ollama(prompt_risposta(testo, domanda_corrente), num_predict=10, logprobs=True)
+        if not resp:
+            continue
+
+        p_true, p_false, p_altri, token_grezzi = estrai_prob_da_logprobs(resp)
+
+        label = "Original Question " if rep == 0 else "Alternative Question"
+        print(f"  - {label} ({rep + 1}): {domanda_corrente}")
+        if token_grezzi:
+            print(f"    Vettore Token (Top {TOP_LOGPROBS}): [{', '.join(token_grezzi)}]")
+
+        riga.alternative.append(Alternativa(
+            domanda_alt=domanda_corrente,
+            risposta_pulita=classifica(p_true, p_false),
+            p_true_raw=p_true,
+            p_false_raw=p_false,
+            p_altri_raw=p_altri,
+        ))
+
+        # Parafrasi per la prossima ripetizione (saltabile sull'ultima)
+        if rep < RIPETIZIONI_PER_DOMANDA - 1:
+            resp_pert = interroga_ollama(prompt_parafrasi(domanda_corrente), num_predict=100)
+            domanda_corrente = resp_pert.get("response", "").strip() or domanda_corrente
+
+    return riga
+
+
+# ============================================================
+# I/O CSV (scrittura incrementale)
+# ============================================================
+CSV_HEADER = ["id", "domanda", "reale", "alternative_json"]
+
+
+def scrivi_riga(writer: csv.writer, file_handle, riga: RigaBenchmark) -> None:
+    alternative_json = json.dumps([asdict(a) for a in riga.alternative])
+    writer.writerow([riga.id, riga.domanda, riga.reale, alternative_json])
+    file_handle.flush()
+
+
+def esegui_benchmark(filename: str = OUTPUT_CSV) -> None:
+    print("Scarico o carico il dataset dalla cache...")
+    dataset = load_dataset(DATASET_NAME)
+    dati_validazione = dataset["validation"].shuffle()
 
     print(f"\nInizio test su {NUM_TEST} domande (con {RIPETIZIONI_PER_DOMANDA} ripetizioni l'una)...")
+    print(f"Output incrementale su '{filename}'\n")
 
-    for i in range(NUM_TEST):
-        riga = dati_validazione[i]
-        testo = riga['passage']
-        domanda = riga['question']
-        risposta_reale = str(riga['answer']).lower()
-
-        print(f"\nElaborazione Domanda {i + 1}/{NUM_TEST}")
-
-        conteggi = {"true": 0, "false": 0, "altri": 0}
-        somma_prob_true = 0.0
-        somma_prob_false = 0.0
-        somma_prob_altri = 0.0
-        distribuzioni_ripetizioni = []
-
-        dati_domanda = {
-            "id": i + 1,
-            "domanda": domanda,
-            "reale": risposta_reale,
-            "alternative": [],
-            "prob_media_unita": "",
-            "generata_dist": "",
-            "corretta": False
-        }
-
-        domanda_corrente = domanda
-
-        for rep in range(RIPETIZIONI_PER_DOMANDA):
-            label = "Original Question " if rep == 0 else "Alternative Question"
-            prompt_iniziale = (
-                f"You are a strict reading comprehension assistant. Read the following passage carefully.\n"
-                f"Your response must be exactly one word: either 'True' or 'False'. Do not include any explanations, introductory text, or punctuation.\n\n"
-                f"Passage:\n{testo}\n\n"
-                f"Question: {domanda_corrente}\n\n"
-                f"Answer:"
-            )
-            payload_iniziale = {
-                'model': 'llama3',
-                'prompt': prompt_iniziale,
-                'stream': False,
-                'options': {'num_predict': 10},
-                'raw': False,
-                'logprobs': True,
-                'top_logprobs': 10
-            }
-
-            resp_eval = interroga_ollama(payload_iniziale)
-            if not resp_eval:
-                continue
-
-            p_true, p_false, p_altri, token_grezzi = estrai_prob_da_logprobs(resp_eval)
-
-            distribuzioni_ripetizioni.append(f"({p_true:.8f}, {p_false:.8f}, {p_altri:.8f})")
-
-            # Accumula le prob della singola ripetizione
-            somma_prob_true += p_true
-            somma_prob_false += p_false
-            somma_prob_altri += p_altri
-
-            # Classificazione basata sulla singola ripetizione (non sulla somma cumulativa)
-            if p_true > p_false:
-                testo_generato = "true"
-                conteggi["true"] += 1
-            elif p_false > p_true:
-                testo_generato = "false"
-                conteggi["false"] += 1
-            else:
-                testo_generato = "altro"
-                conteggi["altri"] += 1
-
-            print(f"  - {label} ({rep + 1}): {domanda_corrente}")
-            if token_grezzi:
-                print(f"Vettore Token Rilevati (Top 10): [{', '.join(token_grezzi)}]")
-
-            dati_domanda["alternative"].append({
-                "domanda_alt": domanda_corrente,
-                "risposta_pulita": testo_generato,
-                "prob_unita_alt": f"T:{(p_true * 100):.8f}% F:{(p_false * 100):.8f}% O:{(p_altri * 100):.8f}%",
-                "p_true_raw": p_true,
-                "p_false_raw": p_false,
-                "p_altri_raw": p_altri  
-
-            })
-
-            prompt_perturbazione = (
-                f"You are an expert linguistic assistant. Your only task is to paraphrase the given question.\n"
-                f"Rewrite the question using different words or sentence structure, but keep the exact same logical meaning and intent.\n"
-                f"Your response must contain ONLY the new paraphrased question. Do not include any introductory phrases, explanations, or answers.\n\n"
-                f"Question: {domanda_corrente}\n\n"
-                f"Paraphrased Question:"
-            )
-            payload_perturbazione = {
-                'model': 'llama3',
-                'prompt': prompt_perturbazione,
-                'stream': False,
-                'options': {'num_predict': 100},
-                'raw': False
-            }
-            resp_pert = interroga_ollama(payload_perturbazione)
-            domanda_corrente = resp_pert.get('response', '').strip() if resp_pert else domanda_corrente
-
-        print(f"  -> Vettore distribuzioni (T, F, A): [{', '.join(distribuzioni_ripetizioni)}]")
-
-        # Decisione finale fuori dal loop, basata sulle somme cumulative delle prob
-        if somma_prob_true > somma_prob_false:
-            risposta_scelta_modello = "true"
-        elif somma_prob_false > somma_prob_true:
-            risposta_scelta_modello = "false"
-        else:
-            risposta_scelta_modello = "pareggio"
-
-        valori = sorted([conteggi["true"], conteggi["false"]], reverse=True)
-        chiave_distribuzione = f"{valori[0]}-{valori[1]}"
-        esito_corretto = (risposta_scelta_modello == risposta_reale)
-
-        if esito_corretto:
-            risultati.dist_corrette[chiave_distribuzione] = risultati.dist_corrette.get(chiave_distribuzione, 0) + 1
-            if risposta_reale == "true":
-                risultati.tp += 1
-            else:
-                risultati.tn += 1
-        else:
-            risultati.dist_errate[chiave_distribuzione] = risultati.dist_errate.get(chiave_distribuzione, 0) + 1
-            if risposta_reale == "false":
-                risultati.fp += 1
-            else:
-                risultati.fn += 1
-
-        perc_true_avg = (somma_prob_true / RIPETIZIONI_PER_DOMANDA) * 100
-        perc_false_avg = (somma_prob_false / RIPETIZIONI_PER_DOMANDA) * 100
-        perc_altri_avg = (somma_prob_altri / RIPETIZIONI_PER_DOMANDA) * 100
-
-        dati_domanda["prob_media_unita"] = f"T:{perc_true_avg:.8f}% F:{perc_false_avg:.8f}% A:{perc_altri_avg:.8f}%"
-        dati_domanda["generata_dist"] = chiave_distribuzione
-        dati_domanda["corretta"] = esito_corretto
-
-        risultati.risultati_per_tabella.append(dati_domanda)
-
-    return risultati
-# ============================================================
-# SALVATAGGIO IN CSV
-# ============================================================
-def salva_su_csv(risultati: RisultatiBenchmark, filename="risultati_benchmark.csv"):
-    print(f"\nSalvataggio dei dati nel file '{filename}'...")
-    with open(filename, mode='w', newline='', encoding='utf-8') as file:
+    with open(filename, mode="w", newline="", encoding="utf-8") as file:
         writer = csv.writer(file)
-        # Intestazione del CSV
-        writer.writerow(["id", "domanda", "reale", "alternative_json", "prob_media_unita", "generata_dist", "corretta"])
+        writer.writerow(CSV_HEADER)
+        file.flush()
 
-        for riga in risultati.risultati_per_tabella:
-            # Salviamo il dictionary annidato 'alternative' come stringa JSON
-            alternative_json = json.dumps(riga["alternative"])
-            writer.writerow([
-                riga["id"],
-                riga["domanda"],
-                riga["reale"],
-                alternative_json,
-                riga["prob_media_unita"],
-                riga["generata_dist"],
-                riga["corretta"]
-            ])
-    print("Salvataggio completato!")
+        for i in range(NUM_TEST):
+            print(f"\nElaborazione Domanda {i + 1}/{NUM_TEST}")
+            riga = elabora_domanda(i + 1, dati_validazione[i])
+            scrivi_riga(writer, file, riga)
+
+    print(f"\nSalvataggio completato su '{filename}'!")
 
 
 if __name__ == "__main__":
-    dati_benchmark = esegui_benchmark()
-    salva_su_csv(dati_benchmark)
+    esegui_benchmark()
