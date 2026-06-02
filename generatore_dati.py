@@ -11,12 +11,12 @@ from datasets import load_dataset
 # CONFIGURAZIONE
 # ============================================================
 NUM_TEST = 3
-RIPETIZIONI_PER_DOMANDA = 3
+RIPETIZIONI_PER_DOMANDA = 5
 URL_OLLAMA = "http://localhost:11434/api/generate"
-MODELLO = "llama3"
+MODELLO = "llama3" #aggiungere piu modelli possibili 
 DATASET_NAME = "google/boolq"
 OUTPUT_CSV = "risultati_benchmark.csv"
-TOP_LOGPROBS = 10
+TOP_LOGPROBS = 20
 
 
 # ============================================================
@@ -47,7 +47,7 @@ def prompt_risposta(testo: str, domanda: str) -> str:
         "You are a strict reading comprehension assistant. Read the following passage carefully.\n"
         "Your response must be exactly one word: either 'True' or 'False'. "
         "Do not include any explanations, introductory text, or punctuation.\n\n"
-        f"Passage:\n{testo}\n\n"
+        f"Passage:\n{testo}\n\n"  #provare ad omettere il contesto e vedere cosa succede 
         f"Question: {domanda}\n\n"
         "Answer:"
     )
@@ -88,26 +88,26 @@ def interroga_ollama(prompt: str, num_predict: int, logprobs: bool = False) -> d
 
 
 def estrai_prob_da_logprobs(resp: dict) -> tuple[float, float, float, list[str]]:
-    logprobs = resp.get("logprobs", [])
+    logprobs = resp.get("logprobs", []) # estrai array logprobs
     if not (isinstance(logprobs, list) and logprobs):
         return 0.0, 0.0, 0.0, []
 
     p_true = p_false = p_altri = 0.0
     token_grezzi: list[str] = []
 
-    for candidato in logprobs[0].get("top_logprobs", []):
-        token = candidato.get("token", "")
+    for candidato in logprobs[0].get("top_logprobs", []): # prendi i top 10 token dalla posizione 1 siccome abbiamo detto che può rispondere solo true / false, ciò che ci interessa è in prima posizione 
+        token = candidato.get("token", "") # estraggo il contenuto del token (es. True)
         testo = token.strip().lower()
-        prob = math.exp(candidato.get("logprob", -100))
+        prob = math.exp(candidato.get("logprob", -100)) # esponenziale per estrarre probabilità
         token_grezzi.append(f"'{token}': {prob * 100:.8f}%")
 
-        if "true" in testo:
+        if "true" in testo: #considerare anche altre possiiblità (es. Yes)
             p_true += prob
-        elif "false" in testo:
+        elif "false" in testo: 
             p_false += prob
         else:
             p_altri += prob
-
+    # stampra a video i token riconosciuti come "true / false / other"
     return p_true, p_false, p_altri, token_grezzi
 
 

@@ -9,10 +9,8 @@ Original file is located at
 [1] Import librerie
 """
 
-import os
 import csv
 import json
-import math
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
