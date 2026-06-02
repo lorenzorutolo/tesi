@@ -12,6 +12,7 @@ from datasets import load_dataset
 # ============================================================
 NUM_TEST = 3
 RIPETIZIONI_PER_DOMANDA = 5
+MAX_TENTATIVI_PARAFRASI = 10
 URL_OLLAMA = "http://localhost:11434/api/generate"
 MODELLO = "llama3" #aggiungere piu modelli possibili 
 DATASET_NAME = "google/boolq"
@@ -29,6 +30,7 @@ class Alternativa:
     p_true_raw: float
     p_false_raw: float
     p_altri_raw: float
+    convergente: bool = True
 
 
 @dataclass
@@ -37,6 +39,7 @@ class RigaBenchmark:
     domanda: str
     reale: str
     alternative: list[Alternativa] = field(default_factory=list)
+    scartate: list[Alternativa] = field(default_factory=list)
 
 
 # ============================================================
@@ -122,6 +125,22 @@ def classifica(p_true: float, p_false: float) -> str:
 # ============================================================
 # BENCHMARK
 # ============================================================
+def interroga_e_classifica(testo: str, domanda: str) -> Alternativa | None:
+    resp = interroga_ollama(prompt_risposta(testo, domanda), num_predict=10, logprobs=True)
+    if not resp:
+        return None
+    p_true, p_false, p_altri, token_grezzi = estrai_prob_da_logprobs(resp)
+    if token_grezzi:
+        print(f"    Vettore Token (Top {TOP_LOGPROBS}): [{', '.join(token_grezzi)}]")
+    return Alternativa(
+        domanda_alt=domanda,
+        risposta_pulita=classifica(p_true, p_false),
+        p_true_raw=p_true,
+        p_false_raw=p_false,
+        p_altri_raw=p_altri,
+    )
+
+
 def elabora_domanda(id_domanda: int, riga_dataset: dict) -> RigaBenchmark:
     testo = riga_dataset["passage"]
     domanda_originale = riga_dataset["question"]
@@ -131,31 +150,46 @@ def elabora_domanda(id_domanda: int, riga_dataset: dict) -> RigaBenchmark:
         reale=str(riga_dataset["answer"]).lower(),
     )
 
+    # rep 0: domanda originale, fissa la risposta di riferimento
+    print(f"  - Original Question (1): {domanda_originale}")
+    alt_originale = interroga_e_classifica(testo, domanda_originale)
+    if alt_originale is None:
+        return riga
+    riga.alternative.append(alt_originale)
+    risposta_riferimento = alt_originale.risposta_pulita
     domanda_corrente = domanda_originale
-    for rep in range(RIPETIZIONI_PER_DOMANDA):
-        resp = interroga_ollama(prompt_risposta(testo, domanda_corrente), num_predict=10, logprobs=True)
-        if not resp:
-            continue
 
-        p_true, p_false, p_altri, token_grezzi = estrai_prob_da_logprobs(resp)
+    # rep >= 1: parafrasi con retry finché la risposta coincide con risposta_riferimento
+    for rep in range(1, RIPETIZIONI_PER_DOMANDA):
+        tentativi_falliti: list[Alternativa] = []
+        alt_accettata: Alternativa | None = None
 
-        label = "Original Question " if rep == 0 else "Alternative Question"
-        print(f"  - {label} ({rep + 1}): {domanda_corrente}")
-        if token_grezzi:
-            print(f"    Vettore Token (Top {TOP_LOGPROBS}): [{', '.join(token_grezzi)}]")
-
-        riga.alternative.append(Alternativa(
-            domanda_alt=domanda_corrente,
-            risposta_pulita=classifica(p_true, p_false),
-            p_true_raw=p_true,
-            p_false_raw=p_false,
-            p_altri_raw=p_altri,
-        ))
-
-        # Parafrasi per la prossima ripetizione (saltabile sull'ultima)
-        if rep < RIPETIZIONI_PER_DOMANDA - 1:
+        for tentativo in range(MAX_TENTATIVI_PARAFRASI):
             resp_pert = interroga_ollama(prompt_parafrasi(domanda_corrente), num_predict=100)
-            domanda_corrente = resp_pert.get("response", "").strip() or domanda_corrente
+            nuova_domanda = resp_pert.get("response", "").strip() or domanda_corrente
+
+            print(f"  - Alternative Question ({rep + 1}) [tentativo {tentativo + 1}]: {nuova_domanda}")
+            alt = interroga_e_classifica(testo, nuova_domanda)
+            if alt is None:
+                continue
+
+            if alt.risposta_pulita == risposta_riferimento:
+                alt_accettata = alt
+                break
+            print(f"    [scartata: '{alt.risposta_pulita}' ≠ riferimento '{risposta_riferimento}']")
+            tentativi_falliti.append(alt)
+
+        if alt_accettata is not None:
+            riga.alternative.append(alt_accettata)
+            riga.scartate.extend(tentativi_falliti)
+            domanda_corrente = alt_accettata.domanda_alt
+        elif tentativi_falliti:
+            ultima = tentativi_falliti[-1]
+            ultima.convergente = False
+            print(f"  ! Rep {rep + 1} non convergente dopo {MAX_TENTATIVI_PARAFRASI} tentativi: tenuta l'ultima")
+            riga.alternative.append(ultima)
+            riga.scartate.extend(tentativi_falliti[:-1])
+            domanda_corrente = ultima.domanda_alt
 
     return riga
 
@@ -163,12 +197,13 @@ def elabora_domanda(id_domanda: int, riga_dataset: dict) -> RigaBenchmark:
 # ============================================================
 # I/O CSV (scrittura incrementale)
 # ============================================================
-CSV_HEADER = ["id", "domanda", "reale", "alternative_json"]
+CSV_HEADER = ["id", "domanda", "reale", "num_scartate", "alternative_json", "scartate_json"]
 
 
 def scrivi_riga(writer: csv.writer, file_handle, riga: RigaBenchmark) -> None:
     alternative_json = json.dumps([asdict(a) for a in riga.alternative])
-    writer.writerow([riga.id, riga.domanda, riga.reale, alternative_json])
+    scartate_json = json.dumps([asdict(a) for a in riga.scartate])
+    writer.writerow([riga.id, riga.domanda, riga.reale, len(riga.scartate), alternative_json, scartate_json])
     file_handle.flush()
 
 
