@@ -4,6 +4,41 @@ Progetto Semestre SUPSI 2025/26
 
 ---
 
+## Struttura del progetto
+
+```
+.
+├── backend/                  # Logica Python: generazione CSV e analisi
+│   ├── generatore_dati.py    # Esegue il benchmark e scrive risultati_benchmark.csv
+│   └── generatore_grafici.py # Analisi e grafici (script Colab)
+└── frontend/                 # Interfaccia web React (Vite), gira in locale
+    ├── index.html
+    ├── package.json
+    ├── vite.config.js
+    └── src/
+        ├── main.jsx
+        └── App.jsx
+```
+
+### Avvio backend
+
+```bash
+cd backend
+python generatore_dati.py
+```
+
+### Avvio frontend (locale)
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Il dev server di Vite parte di default su `http://localhost:5173`.
+
+---
+
 ## Struttura del CSV
 
 Il file ha esattamente **6 colonne** :
@@ -94,4 +129,4 @@ Da queste colonne, `generatore_grafici.py` ricostruisce:
 **Esempi utili:**
 
 esempio di parafrasi rifatta perchè risposta differente da quella di domanda originale
-![alt text](image.png)
+![alt text](documentazione/image.png)

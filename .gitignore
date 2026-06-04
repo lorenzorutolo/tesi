@@ -14,8 +14,6 @@ Documentazione/
 .DS_Store
 Thumbs.db
 
-# GUI vecchia (rimossa)
-image.png
 
 # Istruzioni progetto (locali)
 CLAUDE.md
@@ -26,3 +24,8 @@ __pycache__/
 *.pyo
 .venv/
 venv/
+
+# Node / frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
