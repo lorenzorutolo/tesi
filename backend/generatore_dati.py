@@ -19,6 +19,9 @@ DATASET_NAME = "google/boolq"
 OUTPUT_CSV = "risultati_benchmark.csv"
 TOP_LOGPROBS = 20
 
+SINONIMI_TRUE = {"yes", "truth", "correct", "right"}
+SINONIMI_FALSE = {"no", "wrong", "incorrect", "negative"}
+
 
 # ============================================================
 # STRUTTURE DATI
@@ -104,9 +107,9 @@ def estrai_prob_da_logprobs(resp: dict) -> tuple[float, float, float, list[str]]
         prob = math.exp(candidato.get("logprob", -100)) # esponenziale per estrarre probabilità
         token_grezzi.append(f"'{token}': {prob * 100:.8f}%")
 
-        if "true" in testo: #considerare anche altre possiiblità (es. Yes)
+        if "true" in testo or testo in SINONIMI_TRUE:
             p_true += prob
-        elif "false" in testo: 
+        elif "false" in testo or testo in SINONIMI_FALSE:
             p_false += prob
         else:
             p_altri += prob
