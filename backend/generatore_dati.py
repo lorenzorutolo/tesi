@@ -44,7 +44,6 @@ class RigaBenchmark:
     alternative: list[Alternativa] = field(default_factory=list)
     scartate: list[Alternativa] = field(default_factory=list)
 
-
 # ============================================================
 # PROMPT
 # ============================================================
@@ -101,7 +100,7 @@ def estrai_prob_da_logprobs(resp: dict) -> tuple[float, float, float, list[str]]
     p_true = p_false = p_altri = 0.0
     token_grezzi: list[str] = []
 
-    for candidato in logprobs[0].get("top_logprobs", []): # prendi i top 10 token dalla posizione 1 siccome abbiamo detto che può rispondere solo true / false, ciò che ci interessa è in prima posizione 
+    for candidato in logprobs[0].get("top_logprobs", []): # prendi i top K token dalla posizione 1 siccome abbiamo detto che può rispondere solo true / false, ciò che ci interessa è in prima posizione 
         token = candidato.get("token", "") # estraggo il contenuto del token (es. True)
         testo = token.strip().lower()
         prob = math.exp(candidato.get("logprob", -100)) # esponenziale per estrarre probabilità
@@ -113,7 +112,6 @@ def estrai_prob_da_logprobs(resp: dict) -> tuple[float, float, float, list[str]]
             p_false += prob
         else:
             p_altri += prob
-    # stampra a video i token riconosciuti come "true / false / other"
     return p_true, p_false, p_altri, token_grezzi
 
 
@@ -159,7 +157,7 @@ def elabora_domanda(id_domanda: int, riga_dataset: dict) -> RigaBenchmark:
     if alt_originale is None:
         return riga
     riga.alternative.append(alt_originale)
-    risposta_riferimento = alt_originale.risposta_pulita
+    risposta_riferimento = alt_originale.risposta_pulita #impostiamo la risposta di riferimento come quella alla domanda originale
     domanda_corrente = domanda_originale
 
     # rep >= 1: parafrasi con retry finché la risposta coincide con risposta_riferimento
@@ -168,7 +166,7 @@ def elabora_domanda(id_domanda: int, riga_dataset: dict) -> RigaBenchmark:
         alt_accettata: Alternativa | None = None
 
         for tentativo in range(MAX_TENTATIVI_PARAFRASI):
-            resp_pert = interroga_ollama(prompt_parafrasi(domanda_corrente), num_predict=100)
+            resp_pert = interroga_ollama(prompt_parafrasi(domanda_corrente), num_predict=100) #domanda corrente risulta l'ultima parafrasi accettata non è sempre l'originale
             nuova_domanda = resp_pert.get("response", "").strip() or domanda_corrente
 
             print(f"  - Alternative Question ({rep + 1}) [tentativo {tentativo + 1}]: {nuova_domanda}")
@@ -176,17 +174,17 @@ def elabora_domanda(id_domanda: int, riga_dataset: dict) -> RigaBenchmark:
             if alt is None:
                 continue
 
-            if alt.risposta_pulita == risposta_riferimento:
+            if alt.risposta_pulita == risposta_riferimento: #se la risposta della parafrasi è uguale esce dal loop 
                 alt_accettata = alt
                 break
-            print(f"    [scartata: '{alt.risposta_pulita}' ≠ riferimento '{risposta_riferimento}']")
+            print(f"    [scartata: '{alt.risposta_pulita}' ≠ riferimento '{risposta_riferimento}']") #altrimenti viene inserito nelle domande scartate
             tentativi_falliti.append(alt)
 
         if alt_accettata is not None:
             riga.alternative.append(alt_accettata)
             riga.scartate.extend(tentativi_falliti)
             domanda_corrente = alt_accettata.domanda_alt
-        elif tentativi_falliti:
+        elif tentativi_falliti: #se raggiungi in numero massimo di parafrasi viene mantenuta la parafrasi corrente e segnata come "convergente=false" mentre le altre precedenti scartate
             ultima = tentativi_falliti[-1]
             ultima.convergente = False
             print(f"  ! Rep {rep + 1} non convergente dopo {MAX_TENTATIVI_PARAFRASI} tentativi: tenuta l'ultima")
