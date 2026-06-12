@@ -11,14 +11,132 @@ Original file is located at
 
 import csv
 import json
+import os
+import sys
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.ticker import MultipleLocator
-from google.colab import files
 from scipy import stats
 from scipy.stats import entropy as scipy_entropy
+
+# google.colab è disponibile solo in ambiente Colab: fallback per esecuzione locale
+try:
+    from google.colab import files  # type: ignore
+    IN_COLAB = True
+except ImportError:
+    files = None
+    IN_COLAB = False
+
+# In locale: ogni plt.show() salva un PNG; a fine script genero una galleria
+# HTML con sidebar (click / frecce su-giu') e la apro nel browser.
+if not IN_COLAB:
+    import atexit
+    import webbrowser
+    import matplotlib
+    matplotlib.use("Agg")
+
+    _OUT_DIR = os.path.join(os.path.dirname(__file__), "..", "grafici_output")
+    os.makedirs(_OUT_DIR, exist_ok=True)
+    # pulisce PNG/HTML di run precedenti
+    for _f in os.listdir(_OUT_DIR):
+        if _f.endswith((".png", ".html")):
+            try:
+                os.remove(os.path.join(_OUT_DIR, _f))
+            except OSError:
+                pass
+
+    _figures_meta = []  # [(filename, titolo)]
+
+    def _estrai_titolo(fig):
+        for ax in fig.get_axes():
+            t = ax.get_title()
+            if t:
+                return t
+        # fallback per le matrici di confusione (titolo messo via ax.text)
+        for ax in fig.get_axes():
+            for txt in ax.texts:
+                s = txt.get_text()
+                if any(k in s for k in ("Originale", "Varianti", "Maggioranza")):
+                    return s
+        return ""
+
+    def _show_and_save(*args, **kwargs):
+        n = len(_figures_meta) + 1
+        filename = f"figura_{n:02d}.png"
+        path = os.path.join(_OUT_DIR, filename)
+        plt.savefig(path, dpi=120, bbox_inches="tight")
+        titolo = _estrai_titolo(plt.gcf()) or f"Figura {n}"
+        _figures_meta.append((filename, titolo))
+        print(f"  [{n:02d}] {titolo}")
+        plt.close("all")
+
+    plt.show = _show_and_save
+
+    def _genera_galleria():
+        if not _figures_meta:
+            return
+        items = "\n".join(
+            f'<li class="item" data-target="{fn}">{i + 1}. {t}</li>'
+            for i, (fn, t) in enumerate(_figures_meta)
+        )
+        first_fn, first_t = _figures_meta[0]
+        html = f"""<!doctype html>
+<html lang="it"><head><meta charset="utf-8">
+<title>Grafici Benchmark</title>
+<style>
+  *{{box-sizing:border-box}}
+  body{{margin:0;font-family:-apple-system,Segoe UI,sans-serif;display:flex;height:100vh}}
+  aside{{width:340px;border-right:1px solid #ddd;overflow-y:auto;background:#fafafa}}
+  aside h1{{font-size:14px;margin:0;padding:14px 16px;border-bottom:1px solid #ddd;background:#fff}}
+  ul{{list-style:none;margin:0;padding:0}}
+  .item{{padding:10px 16px;cursor:pointer;border-bottom:1px solid #eee;font-size:13px;line-height:1.35}}
+  .item:hover{{background:#eef}}
+  .item.active{{background:#2196F3;color:#fff}}
+  main{{flex:1;padding:24px;overflow:auto;display:flex;flex-direction:column;align-items:center}}
+  h2{{font-size:18px;margin:0 0 16px;text-align:center}}
+  img{{max-width:100%;max-height:calc(100vh - 80px);object-fit:contain;box-shadow:0 2px 8px rgba(0,0,0,.1)}}
+  .hint{{position:fixed;bottom:8px;right:12px;font-size:11px;color:#888}}
+</style></head><body>
+<aside>
+  <h1>Grafici ({len(_figures_meta)})</h1>
+  <ul id="lista">{items}</ul>
+</aside>
+<main>
+  <h2 id="titolo">{first_t}</h2>
+  <img id="img" src="{first_fn}" alt="">
+</main>
+<div class="hint">Usa &uarr; / &darr; per navigare</div>
+<script>
+  const items = document.querySelectorAll('.item');
+  const img = document.getElementById('img');
+  const titolo = document.getElementById('titolo');
+  items[0].classList.add('active');
+  function attiva(it){{
+    items.forEach(x=>x.classList.remove('active'));
+    it.classList.add('active');
+    img.src = it.dataset.target;
+    titolo.textContent = it.textContent.replace(/^\\d+\\.\\s*/, '');
+    it.scrollIntoView({{block:'nearest'}});
+  }}
+  items.forEach(it=>it.addEventListener('click', ()=>attiva(it)));
+  document.addEventListener('keydown', e=>{{
+    const active = document.querySelector('.item.active');
+    let target = null;
+    if (e.key === 'ArrowDown') target = active.nextElementSibling;
+    if (e.key === 'ArrowUp')   target = active.previousElementSibling;
+    if (target) attiva(target);
+  }});
+</script></body></html>"""
+        index_path = os.path.join(_OUT_DIR, "index.html")
+        with open(index_path, "w", encoding="utf-8") as f:
+            f.write(html)
+        url = "file:///" + os.path.abspath(index_path).replace("\\", "/")
+        print(f"\nGalleria pronta: {url}")
+        webbrowser.open(url)
+
+    atexit.register(_genera_galleria)
 
 """[2] Costanti di visualizzazione"""
 
@@ -27,15 +145,31 @@ RIPETIZIONI_PER_DOMANDA = 5
 
 """[3] Caricamento"""
 
-print("Seleziona il file CSV con i risultati del benchmark:")
-uploaded = files.upload()
-
-# Recupera il nome del file appena caricato
-if uploaded:
-    NOME_FILE = list(uploaded.keys())[0]
-    print(f"\nFile '{NOME_FILE}' caricato con successo!")
+if IN_COLAB:
+    print("Seleziona il file CSV con i risultati del benchmark:")
+    uploaded = files.upload()
+    if uploaded:
+        NOME_FILE = list(uploaded.keys())[0]
+        print(f"\nFile '{NOME_FILE}' caricato con successo!")
+    else:
+        print("\nNessun file caricato. Assicurati di selezionare il file prima di procedere.")
+        sys.exit(1)
 else:
-    print("\nNessun f ile caricato. Assicurati di selezionare il file prima di procedere.")
+    # Esecuzione locale: prendi il path dal primo argomento CLI, altrimenti
+    # cerca risultati_benchmark.csv nella root del progetto.
+    if len(sys.argv) > 1:
+        NOME_FILE = sys.argv[1]
+    else:
+        candidati = [
+            os.path.join(os.path.dirname(__file__), "..", "risultati_benchmark.csv"),
+            "risultati_benchmark.csv",
+        ]
+        NOME_FILE = next((p for p in candidati if os.path.exists(p)), None)
+        if NOME_FILE is None:
+            print("⚠️ Nessun CSV trovato. Passa il path come argomento: "
+                  "python generatore_grafici.py path/al/file.csv")
+            sys.exit(1)
+    print(f"File '{NOME_FILE}' selezionato (esecuzione locale).")
 
 """[4] Analizzatore di benchmark su accuratezza e entropia"""
 
@@ -1355,6 +1489,103 @@ if 'res' in locals() and res.risultati_per_tabella:
     plot_delta_entropia(
         delta_ter_corrette, delta_ter_errate, vett_delta_ter, vett_correttezza,
         "Delta Entropia (Caso TERNARIO)", max_y=1.6)
+
+else:
+    print("⚠️ Dati non trovati.")
+
+"""# % PROB OTHER (NORMALIZZATA) - DOMANDE CORRETTE vs ERRATE
+
+Per ogni domanda calcoliamo, su ciascuna delle 5 ripetizioni,
+la frazione di massa di probabilità che il modello assegna a token
+NON True/False rispetto al totale top-K:
+
+    p_other_norm = p_altri_raw / (p_true_raw + p_false_raw + p_altri_raw)
+
+Poi facciamo la MEDIA sulle 5 ripetizioni (Opzione A) e confrontiamo
+la distribuzione tra domande con risposta corretta ed errata.
+
+Interpretazione: misura quanto il modello "sta fuori task" rispetto
+al formato True/False richiesto dal prompt — è una dimensione di
+incertezza ortogonale all'entropia binaria su True/False.
+"""
+
+if 'res' in locals() and res.risultati_per_tabella:
+    pother_corrette = []
+    pother_errate = []
+    vett_pother = []
+    vett_correttezza = []  # 0 se corretta, 1 se sbagliata
+
+    for riga in res.risultati_per_tabella:
+        valori_pother_dom = []
+
+        for alt in riga["alternative"]:
+            p_t = alt.get("p_true_raw", 0.0)
+            p_f = alt.get("p_false_raw", 0.0)
+            p_o = alt.get("p_altri_raw", 0.0)
+
+            somma = p_t + p_f + p_o
+            if somma > 0:
+                valori_pother_dom.append(p_o / somma)
+
+        if not valori_pother_dom:
+            continue
+
+        # Media sulle 5 ripetizioni (Opzione A)
+        pother_medio = float(np.mean(valori_pother_dom))
+        is_corretta = riga.get("corretta", False)
+
+        vett_pother.append(pother_medio)
+        vett_correttezza.append(0 if is_corretta else 1)
+
+        if is_corretta:
+            pother_corrette.append(pother_medio)
+        else:
+            pother_errate.append(pother_medio)
+
+    fig, ax = plt.subplots(figsize=(8, 6), dpi=100)
+
+    data_to_plot = [pother_corrette, pother_errate]
+
+    bp = ax.boxplot(data_to_plot, positions=[1, 2], widths=0.4, patch_artist=True, showfliers=False, zorder=1)
+
+    box_colors = ['#FFFFFF', '#FFFFFF']
+    box_edges = ['#4CAF50', '#F44336']
+
+    for patch, color, edge in zip(bp['boxes'], box_colors, box_edges):
+        patch.set_facecolor(color)
+        patch.set_edgecolor(edge)
+        patch.set_linewidth(1.5)
+
+    for median in bp['medians']:
+        median.set(color='black', linewidth=2)
+
+    jitter_c = np.random.normal(1, 0.05, size=len(pother_corrette))
+    jitter_e = np.random.normal(2, 0.05, size=len(pother_errate))
+
+    ax.scatter(jitter_c, pother_corrette, alpha=0.5, color='#4CAF50',
+               edgecolors='white', linewidth=0.5,
+               label=f'Esatte ({len(pother_corrette)})', zorder=2)
+
+    ax.scatter(jitter_e, pother_errate, alpha=0.5, color='#F44336',
+               edgecolors='white', linewidth=0.5,
+               label=f'Sbagliate ({len(pother_errate)})', zorder=2)
+
+    ax.set_xticks([1, 2])
+    ax.set_xticklabels(['Risposte Esatte', 'Risposte Sbagliate'], fontsize=11, fontweight='bold')
+    ax.set_title("% Probabilità OTHER (media sulle 5 ripetizioni) vs Accuratezza", pad=15)
+    ax.set_ylabel("p_other / (p_true + p_false + p_other)\n[0 = nessuna massa fuori task, 1 = tutta fuori task]")
+
+    # Limite Y dinamico (p_other è tipicamente piccola, evitiamo asse schiacciato)
+    max_val = max(vett_pother) if vett_pother else 1.0
+    ax.set_ylim(-0.02, max(0.1, max_val * 1.1))
+    ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.1), ncol=2)
+    ax.grid(axis='y', linestyle='--', alpha=0.7, zorder=0)
+
+    if len(vett_pother) > 1:
+        pearson_result = stats.pearsonr(vett_pother, vett_correttezza)
+        print(f"Coefficiente di correlazione di Pearson (p_other medio vs errore): {pearson_result.statistic}")
+
+    plt.show()
 
 else:
     print("⚠️ Dati non trovati.")

@@ -27,9 +27,14 @@ cd backend
 python generatore_dati.py
 ```
 
+Genera (o aggiorna) `risultati_benchmark.csv` nella root del progetto.
+
 ### Avvio frontend (locale)
 
+Il frontend legge `risultati_benchmark.csv` come asset statico da `frontend/public/`. Ogni volta che rigeneri il CSV, copialo lì sopra prima di lanciare il dev server:
+
 ```bash
+cp risultati_benchmark.csv frontend/public/risultati_benchmark.csv
 cd frontend
 npm install
 npm run dev
