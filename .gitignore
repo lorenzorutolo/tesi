@@ -18,6 +18,8 @@ Thumbs.db
 # Istruzioni progetto (locali)
 CLAUDE.md
 
+grafici_output/
+
 # Python
 __pycache__/
 *.pyc

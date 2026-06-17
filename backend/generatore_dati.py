@@ -52,7 +52,7 @@ def prompt_risposta(testo: str, domanda: str) -> str:
         "You are a strict reading comprehension assistant. Read the following passage carefully.\n"
         "Your response must be exactly one word: either 'True' or 'False'. "
         "Do not include any explanations, introductory text, or punctuation.\n\n"
-        f"Passage:\n{testo}\n\n"  #provare ad omettere il contesto e vedere cosa succede 
+        f"Passage:\n{testo}\n\n"  
         f"Question: {domanda}\n\n"
         "Answer:"
     )

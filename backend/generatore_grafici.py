@@ -21,7 +21,6 @@ from matplotlib.ticker import MultipleLocator
 from scipy import stats
 from scipy.stats import entropy as scipy_entropy
 
-# google.colab è disponibile solo in ambiente Colab: fallback per esecuzione locale
 try:
     from google.colab import files  # type: ignore
     IN_COLAB = True
@@ -39,7 +38,6 @@ if not IN_COLAB:
 
     _OUT_DIR = os.path.join(os.path.dirname(__file__), "..", "grafici_output")
     os.makedirs(_OUT_DIR, exist_ok=True)
-    # pulisce PNG/HTML di run precedenti
     for _f in os.listdir(_OUT_DIR):
         if _f.endswith((".png", ".html")):
             try:
@@ -1493,99 +1491,112 @@ if 'res' in locals() and res.risultati_per_tabella:
 else:
     print("⚠️ Dati non trovati.")
 
-"""# % PROB OTHER (NORMALIZZATA) - DOMANDE CORRETTE vs ERRATE
-
+"""# LOG-PROB MASSA FUORI-TASK - DOMANDE CORRETTE vs ERRATE
 Per ogni domanda calcoliamo, su ciascuna delle 5 ripetizioni,
-la frazione di massa di probabilità che il modello assegna a token
-NON True/False rispetto al totale top-K:
-
-    p_other_norm = p_altri_raw / (p_true_raw + p_false_raw + p_altri_raw)
-
-Poi facciamo la MEDIA sulle 5 ripetizioni (Opzione A) e confrontiamo
-la distribuzione tra domande con risposta corretta ed errata.
-
-Interpretazione: misura quanto il modello "sta fuori task" rispetto
-al formato True/False richiesto dal prompt — è una dimensione di
-incertezza ortogonale all'entropia binaria su True/False.
+la frazione di massa di probabilità che NON è una risposta valida
+True/False. Questo include sia gli altri token nei top-K
+sia la massa NON catturata dai top-K (per costruzione fuori task):
+    p_fuori_task = 1 - p_true_raw - p_false_raw
+NB: NON dividiamo per (p_true + p_false + p_altri). Quel denominatore
+parziale rinormalizzerebbe via la massa mancante, spalmandola su
+true/false e sottostimando il fuori-task. Il denominatore corretto
+è l'unità (la distribuzione completa somma a 1).
+Visualizzazione in LOG-PROB invece delle percentuali: la massa
+fuori-task è tipicamente piccola (ordini di grandezza 1e-3..1e-1)
+e anche con la scala logaritmica sull'asse risulta poco leggibile.
+Plottando direttamente ln(p) su asse LINEARE i valori si distribuiscono
+in modo più uniforme e interpretabile. Floor a 1e-4 (ln ≈ -9.21) per
+rendere definito il log dei valori (quasi) nulli.
+Poi facciamo la MEDIA sulle 5 ripetizioni e confrontiamo la
+distribuzione tra domande con risposta corretta ed errata.
 """
-
 if 'res' in locals() and res.risultati_per_tabella:
     pother_corrette = []
     pother_errate = []
     vett_pother = []
     vett_correttezza = []  # 0 se corretta, 1 se sbagliata
 
+    EPS = 1e-4  # floor: sotto questa soglia la massa fuori-task è trattata come trascurabile
+
     for riga in res.risultati_per_tabella:
         valori_pother_dom = []
-
         for alt in riga["alternative"]:
             p_t = alt.get("p_true_raw", 0.0)
             p_f = alt.get("p_false_raw", 0.0)
             p_o = alt.get("p_altri_raw", 0.0)
-
             somma = p_t + p_f + p_o
-            if somma > 0:
-                valori_pother_dom.append(p_o / somma)
-
+            if somma > 0:  # ripetizione con dati validi
+                # tutto ciò che non è true/false è fuori task
+                # (other esplicito + massa fuori dai top-K)
+                p_fuori_task = 1.0 - p_t - p_f
+                # floor positivo invece di clamp a 0: necessario per la scala log
+                p_fuori_task = min(1.0, max(EPS, p_fuori_task))
+                valori_pother_dom.append(p_fuori_task)
         if not valori_pother_dom:
             continue
-
-        # Media sulle 5 ripetizioni (Opzione A)
+        # Media sulle 5 ripetizioni, poi log-prob della massa fuori-task.
+        # Lavorare in log (ln) "stira" i valori molto piccoli e rende leggibile
+        # una distribuzione altrimenti schiacciata vicino allo 0; il floor a EPS
+        # garantisce che l'argomento del log resti > 0.
         pother_medio = float(np.mean(valori_pother_dom))
+        logp_medio = float(np.log(pother_medio))
         is_corretta = riga.get("corretta", False)
-
-        vett_pother.append(pother_medio)
+        vett_pother.append(logp_medio)
         vett_correttezza.append(0 if is_corretta else 1)
-
         if is_corretta:
-            pother_corrette.append(pother_medio)
+            pother_corrette.append(logp_medio)
         else:
-            pother_errate.append(pother_medio)
+            pother_errate.append(logp_medio)
 
     fig, ax = plt.subplots(figsize=(8, 6), dpi=100)
-
     data_to_plot = [pother_corrette, pother_errate]
-
     bp = ax.boxplot(data_to_plot, positions=[1, 2], widths=0.4, patch_artist=True, showfliers=False, zorder=1)
-
     box_colors = ['#FFFFFF', '#FFFFFF']
     box_edges = ['#4CAF50', '#F44336']
-
     for patch, color, edge in zip(bp['boxes'], box_colors, box_edges):
         patch.set_facecolor(color)
         patch.set_edgecolor(edge)
         patch.set_linewidth(1.5)
-
     for median in bp['medians']:
         median.set(color='black', linewidth=2)
 
     jitter_c = np.random.normal(1, 0.05, size=len(pother_corrette))
     jitter_e = np.random.normal(2, 0.05, size=len(pother_errate))
-
     ax.scatter(jitter_c, pother_corrette, alpha=0.5, color='#4CAF50',
                edgecolors='white', linewidth=0.5,
                label=f'Esatte ({len(pother_corrette)})', zorder=2)
-
     ax.scatter(jitter_e, pother_errate, alpha=0.5, color='#F44336',
                edgecolors='white', linewidth=0.5,
                label=f'Sbagliate ({len(pother_errate)})', zorder=2)
 
     ax.set_xticks([1, 2])
     ax.set_xticklabels(['Risposte Esatte', 'Risposte Sbagliate'], fontsize=11, fontweight='bold')
-    ax.set_title("% Probabilità OTHER (media sulle 5 ripetizioni) vs Accuratezza", pad=15)
-    ax.set_ylabel("p_other / (p_true + p_false + p_other)\n[0 = nessuna massa fuori task, 1 = tutta fuori task]")
+    ax.set_title("Log-prob massa FUORI-TASK (media sulle 5 ripetizioni) vs Accuratezza", pad=15)
+    ax.set_ylabel("ln(1 - p_true - p_false)\n")
 
-    # Limite Y dinamico (p_other è tipicamente piccola, evitiamo asse schiacciato)
-    max_val = max(vett_pother) if vett_pother else 1.0
-    ax.set_ylim(-0.02, max(0.1, max_val * 1.1))
+    # Asse Y lineare: i valori sono già log-prob, quindi non serve la scala log.
+    if vett_pother:
+        min_val = min(vett_pother)
+        max_val = max(vett_pother)
+        margine = 0.05 * (max_val - min_val) if max_val > min_val else 1.0
+        ax.set_ylim(min_val - margine, max_val + margine)
+
     ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.1), ncol=2)
-    ax.grid(axis='y', linestyle='--', alpha=0.7, zorder=0)
+    ax.grid(axis='y', linestyle='--', alpha=0.7, which='both', zorder=0)
 
+    # Correlazione di Pearson tra log-prob fuori-task ed errore (0=corretta, 1=errata)
     if len(vett_pother) > 1:
         pearson_result = stats.pearsonr(vett_pother, vett_correttezza)
-        print(f"Coefficiente di correlazione di Pearson (p_other medio vs errore): {pearson_result.statistic}")
+        print(f"Coefficiente di correlazione di Pearson (log-prob fuori-task media vs errore): "
+              f"{pearson_result.statistic:.4f} (p={pearson_result.pvalue:.2e})")
+        # Valore mostrato anche a schermo, direttamente sul grafico
+        testo_pearson = (f"Pearson r = {pearson_result.statistic:.4f}\n"
+                         f"p-value = {pearson_result.pvalue:.2e}")
+        ax.text(0.97, 0.97, testo_pearson, transform=ax.transAxes,
+                ha='right', va='top', fontsize=10,
+                bbox=dict(boxstyle='round', facecolor='#FFF8E1',
+                          edgecolor='#E65100', alpha=0.9))
 
     plt.show()
-
 else:
     print("⚠️ Dati non trovati.")
