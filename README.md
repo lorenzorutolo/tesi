@@ -9,7 +9,9 @@ Progetto Semestre SUPSI 2025/26
 ```
 .
 ├── backend/                  # Logica Python: generazione CSV e analisi
-│   ├── generatore_dati.py    # Esegue il benchmark e scrive risultati_benchmark.csv
+│   ├── motore/               # Motore di benchmark dataset-agnostico
+│   ├── specifiche/           # Una spec per dataset (es. boolq.py) + registro
+│   ├── run.py                # Entry point CLI: python backend/run.py <dataset>
 │   └── generatore_grafici.py # Analisi e grafici (script Colab)
 └── frontend/                 # Interfaccia web React (Vite), gira in locale
     ├── index.html
@@ -23,11 +25,10 @@ Progetto Semestre SUPSI 2025/26
 ### Avvio backend
 
 ```bash
-cd backend
-python generatore_dati.py
+python backend/run.py boolq
 ```
 
-Genera (o aggiorna) `risultati_benchmark.csv` nella root del progetto.
+Il primo argomento è il nome del dataset (vedi `backend/specifiche/`); se omesso usa `boolq`. Genera (o aggiorna) `risultati_benchmark.csv` nella root del progetto.
 
 ### Avvio frontend (locale)
 
@@ -70,15 +71,13 @@ id,domanda,reale,num_scartate,alternative_json,scartate_json
 - Gli indici **`1..N-1`** sono parafrasi che **mantengono la stessa risposta dell'originale**: se una parafrasi cambia idea al modello viene scartata e rigenerata (vedi `scartate_json`), fino a un massimo di `MAX_TENTATIVI_PARAFRASI` tentativi. Ogni nuova parafrasi nasce dall'ultima accettata.
 - Se per una rep si esauriscono i tentativi senza mai ottenere la stessa risposta, l'ultima parafrasi viene comunque tenuta e marcata con `convergente: false`.
 
-Ogni elemento è un oggetto con 6 campi spiegati di seguito:
+Ogni elemento è un oggetto con 4 campi spiegati di seguito:
 
 ```json
 {
   "domanda_alt":     "Will additional installments of Bee and PuppyCat be produced?",
   "risposta_pulita": "true",
-  "p_true_raw":      0.999817930678194,
-  "p_false_raw":     0.00017985425916999988,
-  "p_altri_raw":     1.6143687038687492e-06,
+  "probabilita":     {"true": 0.999817930678194, "false": 0.00017985425916999988, "altro": 1.6143687038687492e-06},
   "convergente":     true
 }
 ```
@@ -86,11 +85,11 @@ Ogni elemento è un oggetto con 6 campi spiegati di seguito:
 | Campo             | Significato                                                                                                                                         |
 | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `domanda_alt`     | Testo effettivo presentato al modello in questa ripetizione (originale o parafrasi)                                                                 |
-| `risposta_pulita` | Classificazione `"true"` / `"false"` / `"altro"` decisa con `argmax(p_true_raw, p_false_raw)`                                                       |
-| `p_true_raw`      | Massa di probabilità (somma) sui token top-10 che contengono `"true"`                                                                               |
-| `p_false_raw`     | Massa di probabilità (somma) sui token top-10 che contengono `"false"`                                                                              |
-| `p_altri_raw`     | Massa di probabilità sui restanti token del top-10 (non-true, non-false)                                                                            |
+| `risposta_pulita` | Classe vincente decisa con `argmax` sulle classi del dataset (per BoolQ `"true"`/`"false"`, pareggio → `"altro"`)                                   |
+| `probabilita`     | Distribuzione `classe → massa di probabilità` sui token top-K. Le chiavi sono le classi dichiarate dal dataset più `"altro"` (sempre presente). Per BoolQ: `true`, `false`, `altro` |
 | `convergente`     | Flag che distingue parafrasi stabili da parafrasi che hanno cambiato risposta                         |
+
+> Le chiavi di `probabilita` dipendono dal dataset: per il true/false sono `true`/`false`, per una multiple-choice a 4 opzioni sarebbero `A`/`B`/`C`/`D`. La chiave `altro` raccoglie la massa dei token non riconosciuti.
 
 ### Il flag `convergente`
 
@@ -104,7 +103,7 @@ Serve a distinguere due tipi diversi di entry dentro `alternative_json`:
 
 ## Struttura di `scartate_json`
 
-Stessa forma di `alternative_json`: una **lista JSON** di oggetti con i medesimi 6 campi.
+Stessa forma di `alternative_json`: una **lista JSON** di oggetti con i medesimi 4 campi.
 
 Contiene tutte le parafrasi generate durante il retry che **hanno cambiato la risposta** rispetto al riferimento e sono state quindi scartate. 
 
@@ -122,10 +121,12 @@ Da queste colonne, `generatore_grafici.py` ricostruisce:
 
 - **Matrice di confusione "originale"** → da `alternative[0].risposta_pulita` vs `reale`
 - **Matrice di confusione "varianti"** → da `alternative[1:].risposta_pulita` vs `reale`
-- **Matrice di confusione "maggioranza"** → da `sum(p_true_raw)` vs `sum(p_false_raw)` su tutte le alternative
+- **Matrice di confusione "maggioranza"** → da `sum(probabilita["true"])` vs `sum(probabilita["false"])` su tutte le alternative
 - **Distribuzione voti** (es. `"3-0"`, `"2-1"`) → conteggio dei `risposta_pulita`
-- **Entropia binaria / ternaria** (min / max / avg / delta) → dai `p_*_raw`
-- **Quartili di entropia, scatterplot, Pearson** → tutto dai `p_*_raw`
+- **Entropia binaria / ternaria** (min / max / avg / delta) → dai valori in `probabilita`
+- **Quartili di entropia, scatterplot, Pearson** → tutto dai valori in `probabilita`
+
+> **Nota:** `generatore_grafici.py` e il frontend leggono ancora i vecchi campi piatti `p_true_raw/p_false_raw/p_altri_raw` e vanno adattati al nuovo campo `probabilita` (step successivo, non ancora fatto).
 
 
 ----

@@ -1,21 +1,21 @@
-import { useRef, useState } from 'react'
-import Papa from 'papaparse'
+import { useState } from 'react'
 
-const CSV_URL = '/risultati_benchmark.csv'
+const API_URL = '/api/interroga'
 
 // Aggrega le probabilità grezze su tutte le alternative (originale + ripetizioni)
-// e le normalizza in modo che sommino a 1.
-function calcolaProbabilita(riga) {
-  const alternative = JSON.parse(riga.alternative_json || '[]')
-  if (alternative.length === 0) return null
+// e le normalizza in modo che sommino a 1. ``alternative`` arriva gia' come
+// array di oggetti dalla risposta JSON dell'endpoint.
+function calcolaProbabilita(alternative) {
+  if (!alternative || alternative.length === 0) return null
 
   let sommaTrue = 0
   let sommaFalse = 0
   let sommaAltri = 0
   for (const alt of alternative) {
-    sommaTrue += alt.p_true_raw || 0
-    sommaFalse += alt.p_false_raw || 0
-    sommaAltri += alt.p_altri_raw || 0
+    const p = alt.probabilita || {}
+    sommaTrue += p.true || 0
+    sommaFalse += p.false || 0
+    sommaAltri += p.altro || 0
   }
   const totale = sommaTrue + sommaFalse + sommaAltri
   if (totale === 0) return null
@@ -70,21 +70,6 @@ export default function App() {
   const [risultato, setRisultato] = useState(null)
   const [inCaricamento, setInCaricamento] = useState(false)
   const [errore, setErrore] = useState(null)
-  const righeRef = useRef(null)
-
-  const caricaCsv = async () => {
-    if (righeRef.current) return righeRef.current
-
-    const res = await fetch(CSV_URL)
-    if (!res.ok) throw new Error(`Impossibile caricare ${CSV_URL} (HTTP ${res.status})`)
-    const testo = await res.text()
-    const { data, errors } = Papa.parse(testo, { header: true, skipEmptyLines: true })
-    if (errors.length > 0) throw new Error(`Errore parsing CSV: ${errors[0].message}`)
-    if (data.length === 0) throw new Error('Il CSV non contiene righe.')
-
-    righeRef.current = data
-    return data
-  }
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -94,11 +79,18 @@ export default function App() {
     setErrore(null)
 
     try {
-      const righe = await caricaCsv()
-      const indice = Math.floor(Math.random() * righe.length)
-      const riga = righe[indice]
+      // Chiede al backend di estrarre una domanda casuale e interrogare il
+      // modello dal vivo (originale + ripetizioni). Puo' impiegare vari secondi.
+      const res = await fetch(API_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dataset: 'boolq' }),
+      })
+      if (!res.ok) throw new Error(`Errore dal server (HTTP ${res.status})`)
+      const riga = await res.json()
+      if (riga.errore) throw new Error(riga.errore)
 
-      const probabilita = calcolaProbabilita(riga)
+      const probabilita = calcolaProbabilita(riga.alternative)
       setRisultato({
         testoDomanda: riga.domanda,
         risposta: calcolaRisposta(probabilita),
