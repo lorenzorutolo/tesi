@@ -2,29 +2,38 @@ import { useState } from 'react'
 
 const API_URL = '/api/interroga'
 
-// Aggrega le probabilità grezze su tutte le alternative (originale + ripetizioni)
-// e le normalizza in modo che sommino a 1. ``alternative`` arriva gia' come
-// array di oggetti dalla risposta JSON dell'endpoint.
+// Calcola la "distribuzione media" sulle alternative (originale + ripetizioni),
+// coerente con avg_ent di generatore_grafici.py: ogni variante viene prima
+// normalizzata per conto suo (massa -> distribuzione), poi si fa la media
+// aritmetica. Cosi' ogni ripetizione pesa uguale, indipendentemente dalla massa
+// top-K. ``alternative`` arriva gia' come array di oggetti dall'endpoint.
 function calcolaProbabilita(alternative) {
   if (!alternative || alternative.length === 0) return null
 
-  let sommaTrue = 0
-  let sommaFalse = 0
-  let sommaAltri = 0
+  let sommaT = 0
+  let sommaF = 0
+  let sommaO = 0
+  let kValide = 0
   for (const alt of alternative) {
     const p = alt.probabilita || {}
-    sommaTrue += p.true || 0
-    sommaFalse += p.false || 0
-    sommaAltri += p.altro || 0
+    const t = p.true || 0
+    const f = p.false || 0
+    const o = p.altro || 0
+    const sommaRaw = t + f + o
+    if (sommaRaw > 0) {                 // normalizza la singola variante
+      sommaT += t / sommaRaw
+      sommaF += f / sommaRaw
+      sommaO += o / sommaRaw
+      kValide += 1
+    }
   }
-  const totale = sommaTrue + sommaFalse + sommaAltri
-  if (totale === 0) return null
+  if (kValide === 0) return null
 
-  return {
-    pTrue: sommaTrue / totale,
-    pFalse: sommaFalse / totale,
-    pAltri: sommaAltri / totale,
-    numAlternative: alternative.length,
+  return {                              // media aritmetica delle distribuzioni
+    pTrue: sommaT / kValide,
+    pFalse: sommaF / kValide,
+    pAltri: sommaO / kValide,
+    numAlternative: kValide,
   }
 }
 
