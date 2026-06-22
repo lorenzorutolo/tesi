@@ -206,6 +206,26 @@ class RisultatiBenchmark:
         self.dist_corrette = {}
         self.dist_errate = {}
 
+def _estrai_prob_piatte(alternative: list) -> None:
+    """Adatta il formato CSV nuovo a quello atteso dal resto dell'analisi.
+
+    Il motore ora scrive per ogni alternativa un campo strutturato
+    ``probabilita`` = {"true": .., "false": .., "altro": ..}, mentre tutto il
+    codice qui sotto legge i campi piatti storici
+    ``p_true_raw``/``p_false_raw``/``p_altri_raw``. Per non toccare i ~15 punti
+    di accesso, ricaviamo qui i campi piatti dal campo ``probabilita`` (in-place).
+
+    Retro-compatibile: se ``probabilita`` non c'e' (CSV vecchio) i campi piatti
+    eventualmente gia' presenti restano intatti.
+    """
+    for alt in alternative:
+        prob = alt.get("probabilita")
+        if isinstance(prob, dict):
+            alt["p_true_raw"] = prob.get("true", 0.0)
+            alt["p_false_raw"] = prob.get("false", 0.0)
+            alt["p_altri_raw"] = prob.get("altro", 0.0)
+
+
 def carica_da_csv(filename) -> RisultatiBenchmark:
     risultati = RisultatiBenchmark()
     with open(filename, mode='r', encoding='utf-8') as file:
@@ -213,6 +233,7 @@ def carica_da_csv(filename) -> RisultatiBenchmark:
         for row in reader:
             risposta_reale = row["reale"].strip().lower()
             alternative = json.loads(row["alternative_json"])
+            _estrai_prob_piatte(alternative)  # nuovo campo "probabilita" -> p_*_raw
 
             # Maggioranza derivata dalle somme grezze delle probabilità
             somma_t = sum(a.get("p_true_raw", 0.0) for a in alternative)

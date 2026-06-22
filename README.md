@@ -8,10 +8,12 @@ Progetto Semestre SUPSI 2025/26
 
 ```
 .
-├── backend/                  # Logica Python: generazione CSV e analisi
+├── backend/                  # Logica Python: motore, CLI, API e analisi
 │   ├── motore/               # Motore di benchmark dataset-agnostico
 │   ├── specifiche/           # Una spec per dataset (es. boolq.py) + registro
 │   ├── run.py                # Entry point CLI: python backend/run.py <dataset>
+│   ├── api.py                # Server HTTP (Flask) per l'interfaccia web
+│   ├── requirements.txt      # Dipendenze Python del backend
 │   └── generatore_grafici.py # Analisi e grafici (script Colab)
 └── frontend/                 # Interfaccia web React (Vite), gira in locale
     ├── index.html
@@ -22,25 +24,38 @@ Progetto Semestre SUPSI 2025/26
         └── App.jsx
 ```
 
-### Avvio backend
+Il backend ha **due consumatori dello stesso motore**: la CLI batch (genera il CSV per l'analisi offline) e il server API (interroga il modello dal vivo per l'interfaccia web).
+
+### CLI batch (genera il CSV)
 
 ```bash
 python backend/run.py boolq
 ```
 
-Il primo argomento è il nome del dataset (vedi `backend/specifiche/`); se omesso usa `boolq`. Genera (o aggiorna) `risultati_benchmark.csv` nella root del progetto.
+Il primo argomento è il nome del dataset (vedi `backend/specifiche/`); se omesso usa `boolq`. Genera (o aggiorna) `risultati_benchmark.csv` nella root del progetto, consumato poi da `generatore_grafici.py`.
 
-### Avvio frontend (locale)
+### Interfaccia web (interrogazione live)
 
-Il frontend legge `risultati_benchmark.csv` come asset statico da `frontend/public/`. Ogni volta che rigeneri il CSV, copialo lì sopra prima di lanciare il dev server:
+L'interfaccia web non legge più il CSV: interroga il modello in tempo reale tramite un piccolo server HTTP (Flask). Servono tre componenti in esecuzione:
 
-```bash
-cd frontend
-npm install
-npm run dev
-```
+1. **Ollama** con `llama3` attivo (default `http://localhost:11434`).
+2. **Server API** (in ascolto su `http://localhost:8000`):
 
-Il dev server di Vite parte di default su `http://localhost:5173`.
+   ```bash
+   pip install -r backend/requirements.txt
+   cd backend
+   python api.py
+   ```
+
+3. **Frontend** (dev server Vite su `http://localhost:5173`):
+
+   ```bash
+   cd frontend
+   npm install
+   npm run dev
+   ```
+
+Vite inoltra le chiamate `/api/*` al backend su `:8000` (proxy in `vite.config.js`), quindi non serve copiare nessun CSV: al click del pulsante il frontend chiama `POST /api/interroga`, che estrae una domanda casuale e ne calcola originale + ripetizioni dal vivo.
 
 ---
 
@@ -126,7 +141,7 @@ Da queste colonne, `generatore_grafici.py` ricostruisce:
 - **Entropia binaria / ternaria** (min / max / avg / delta) → dai valori in `probabilita`
 - **Quartili di entropia, scatterplot, Pearson** → tutto dai valori in `probabilita`
 
-> **Nota:** `generatore_grafici.py` e il frontend leggono ancora i vecchi campi piatti `p_true_raw/p_false_raw/p_altri_raw` e vanno adattati al nuovo campo `probabilita` (step successivo, non ancora fatto).
+> **Nota:** `generatore_grafici.py` legge il campo strutturato `probabilita` (`{true, false, altro}`) prodotto dal motore: al caricamento (`_estrai_prob_piatte`) ne ricava i campi piatti `p_true_raw/p_false_raw/p_altri_raw` usati internamente dai grafici. È retro-compatibile con i CSV vecchi. Anche il frontend è allineato a `probabilita`.
 
 
 ----
