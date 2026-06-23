@@ -431,7 +431,7 @@ max_ent_errate = [r.get("max_ent", 0.0) for r in res.risultati_per_tabella if no
 
 fig, ax = plt.subplots(figsize=(8, 5), dpi=100)
 dati_max = [max_ent_corrette if max_ent_corrette else [0.0], max_ent_errate if max_ent_errate else [0.0]]
-bplot = ax.boxplot(dati_max, labels=['Corrette', 'Errate'], patch_artist=True)
+bplot = ax.boxplot(dati_max, tick_labels=['Corrette', 'Errate'], patch_artist=True)
 
 colors = ['#4CAF50', '#F44336']
 for patch, color in zip(bplot['boxes'], colors):
@@ -450,7 +450,7 @@ avg_ent_errate = [r.get("avg_ent", 0.0) for r in res.risultati_per_tabella if no
 
 fig, ax = plt.subplots(figsize=(8, 5), dpi=100)
 dati_avg = [avg_ent_corrette if avg_ent_corrette else [0.0], avg_ent_errate if avg_ent_errate else [0.0]]
-bplot = ax.boxplot(dati_avg, labels=['Corrette', 'Errate'], patch_artist=True)
+bplot = ax.boxplot(dati_avg, tick_labels=['Corrette', 'Errate'], patch_artist=True)
 
 colors = ['#4CAF50', '#F44336']
 for patch, color in zip(bplot['boxes'], colors):
