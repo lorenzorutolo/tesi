@@ -18,6 +18,9 @@ Thumbs.db
 # Istruzioni progetto (locali)
 CLAUDE.md
 
+# Hand-off di sessione (locale)
+HANDOFF.md
+
 grafici_output/
 
 # Python
