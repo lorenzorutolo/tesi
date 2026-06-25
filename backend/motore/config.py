@@ -2,10 +2,11 @@
 
 # Quante domande del dataset processare
 NUM_TEST = 3
-# Quante varianti (originale + parafrasi) generare per ogni domanda
+# Quante varianti (originale + perturbazioni) generare per ogni domanda
 RIPETIZIONI_PER_DOMANDA = 5
-# Tentativi massimi di parafrasi prima di accettare una variante non convergente
-MAX_TENTATIVI_PARAFRASI = 10
+# Tentativi massimi di perturbazione (parafrasi/shuffle) prima di accettare una
+# variante non convergente, cioe' una che cambia la risposta di riferimento.
+MAX_TENTATIVI_VARIANTE = 10
 
 # Endpoint e modello Ollama
 URL_OLLAMA = "http://localhost:11434/api/generate"

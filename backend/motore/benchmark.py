@@ -13,7 +13,7 @@ from dataclasses import asdict
 from datasets import load_dataset
 
 from .config import (
-    MAX_TENTATIVI_PARAFRASI,
+    MAX_TENTATIVI_VARIANTE,
     NUM_TEST,
     OUTPUT_CSV,
     RIPETIZIONI_PER_DOMANDA,
@@ -31,7 +31,7 @@ def interroga_e_classifica(spec: DatasetSpec, d: Domanda) -> Alternativa | None:
     resp = interroga_ollama(spec.prompt_risposta(d), num_predict=10, logprobs=True)
     if not resp:
         return None
-    prob, token_grezzi = estrai_distribuzione(resp, spec)
+    prob, token_grezzi = estrai_distribuzione(resp, spec, d)
     if token_grezzi:
         print(f"    Vettore Token (Top {TOP_LOGPROBS}): [{', '.join(token_grezzi)}]")
     return Alternativa(
@@ -42,7 +42,7 @@ def interroga_e_classifica(spec: DatasetSpec, d: Domanda) -> Alternativa | None:
 
 
 # ============================================================
-# LOOP DI CONVERGENZA (generico)
+# LOOP DI CONVERGENZA 
 # ============================================================
 def elabora_domanda(spec: DatasetSpec, id_domanda: int, riga_dataset: dict) -> RigaBenchmark:
     domanda = spec.leggi_riga(riga_dataset)
@@ -58,7 +58,8 @@ def elabora_domanda(spec: DatasetSpec, id_domanda: int, riga_dataset: dict) -> R
     if alt_originale is None:
         return riga
     riga.alternative.append(alt_originale)
-    risposta_riferimento = alt_originale.risposta_pulita  # riferimento = risposta alla domanda originale
+    # riferimento = classe (canonica) della domanda originale.
+    risposta_riferimento = alt_originale.risposta_pulita
     domanda_corrente = domanda
 
     # rep >= 1: varianti con retry finche' la risposta coincide con risposta_riferimento
@@ -66,9 +67,11 @@ def elabora_domanda(spec: DatasetSpec, id_domanda: int, riga_dataset: dict) -> R
         tentativi_falliti: list[Alternativa] = []
         alt_accettata: Alternativa | None = None
         variante_accettata: Domanda | None = None
+        ultima_variante: Domanda = domanda_corrente
 
-        for tentativo in range(MAX_TENTATIVI_PARAFRASI):
+        for tentativo in range(MAX_TENTATIVI_VARIANTE):
             variante = spec.genera_variante(domanda_corrente, parafrasa)
+            ultima_variante = variante
 
             print(f"  - Alternative Question ({rep + 1}) [tentativo {tentativo + 1}]: {variante.testo}")
             alt = interroga_e_classifica(spec, variante)
@@ -89,16 +92,11 @@ def elabora_domanda(spec: DatasetSpec, id_domanda: int, riga_dataset: dict) -> R
         elif tentativi_falliti:  # raggiunto il numero massimo: tieni l'ultima e segnala non convergente
             ultima = tentativi_falliti[-1]
             ultima.convergente = False
-            print(f"  ! Rep {rep + 1} non convergente dopo {MAX_TENTATIVI_PARAFRASI} tentativi: tenuta l'ultima")
+            print(f"  ! Rep {rep + 1} non convergente dopo {MAX_TENTATIVI_VARIANTE} tentativi: tenuta l'ultima")
             riga.alternative.append(ultima)
             riga.scartate.extend(tentativi_falliti[:-1])
             # la domanda corrente resta l'ultima formulazione tentata
-            domanda_corrente = Domanda(
-                testo=ultima.domanda_alt,
-                contesto=domanda_corrente.contesto,
-                reale=domanda_corrente.reale,
-                dati=domanda_corrente.dati,
-            )
+            domanda_corrente = ultima_variante
 
     return riga
 

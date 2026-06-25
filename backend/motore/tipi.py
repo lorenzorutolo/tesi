@@ -50,12 +50,17 @@ class DatasetSpec(Protocol):
     """Contratto che ogni dataset deve implementare per essere eseguito dal motore.
 
     Tutto cio' che e' specifico del dataset vive qui dentro; il motore resta
-    agnostico. Una futura spec multiple-choice implementera' lo stesso Protocol:
-    - ``classi`` saranno le lettere delle opzioni (es. ["A","B","C","D"]);
-    - ``classe_di_token`` mappera' "A"/"(A)"/"a" -> "A";
-    - ``genera_variante`` parafrasera' lo stem E rimescolera' le opzioni (salvate
-      in ``Domanda.dati``), ricalcolando ``Domanda.reale`` perche' con lo shuffle
-      la lettera corretta cambia.
+    agnostico. Esempi di implementazioni:
+    - BoolQ: ``classi`` = ["true","false"], perturbazione = sola parafrasi.
+    - Multiple-choice: ``classi`` sono le lettere delle
+      opzioni (es. ["A","B","C","D","E"]); la perturbazione e' lo shuffle delle
+      opzioni (salvate in ``Domanda.dati``). La distribuzione e' in chiavi
+      CANONICHE: la lettera si riferisce sempre alla posizione ORIGINALE del
+      contenuto, non a quella mostrata dopo lo shuffle. Cosi' se il modello
+      sceglie sempre lo stesso contenuto la classe vincente resta stabile tra le
+      varianti e le distribuzioni sono direttamente confrontabili/mediabili.
+      La traduzione lettera-mostrata -> lettera-canonica avviene in
+      ``classe_di_token``, che per questo riceve la ``Domanda`` corrente.
     """
 
     nome: str           # identificatore usato dalla CLI (es. "boolq")
@@ -71,9 +76,15 @@ class DatasetSpec(Protocol):
         """Costruisce il prompt con cui interrogare il modello su ``d``."""
         ...
 
-    def classe_di_token(self, token: str) -> str | None:
-        """Mappa un token del modello a una classe, o None se non riconosciuto
-        (in tal caso la probabilita' finisce nel bucket "altro")."""
+    def classe_di_token(self, token: str, d: Domanda) -> str | None:
+        """Mappa un token del modello a una classe CANONICA, o None se non
+        riconosciuto (in tal caso la probabilita' finisce nel bucket "altro").
+
+        Riceve la ``Domanda`` corrente perche' per il multiple-choice la lettera
+        mostrata dipende dallo shuffle: "B" sulla variante va tradotto nella
+        lettera ORIGINALE dell'opzione corrispondente, cosi' la distribuzione
+        resta in chiavi stabili. Per dataset senza rimescolamento (es. BoolQ)
+        ``d`` viene ignorato."""
         ...
 
     def genera_variante(self, corrente: Domanda,

@@ -83,7 +83,7 @@ id,domanda,reale,num_scartate,alternative_json,scartate_json
 È una **lista JSON** lunga `RIPETIZIONI_PER_DOMANDA`.
 
 - L'**indice 0** è sempre la domanda originale ed è quella che **fissa la risposta di riferimento**.
-- Gli indici **`1..N-1`** sono parafrasi che **mantengono la stessa risposta dell'originale**: se una parafrasi cambia idea al modello viene scartata e rigenerata (vedi `scartate_json`), fino a un massimo di `MAX_TENTATIVI_PARAFRASI` tentativi. Ogni nuova parafrasi nasce dall'ultima accettata.
+- Gli indici **`1..N-1`** sono varianti che **mantengono la stessa risposta dell'originale**: se una variante (parafrasi per BoolQ, shuffle delle opzioni per il multiple-choice) cambia idea al modello viene scartata e rigenerata (vedi `scartate_json`), fino a un massimo di `MAX_TENTATIVI_VARIANTE` tentativi. Ogni nuova variante nasce dall'ultima accettata.
 - Se per una rep si esauriscono i tentativi senza mai ottenere la stessa risposta, l'ultima parafrasi viene comunque tenuta e marcata con `convergente: false`.
 
 Ogni elemento è un oggetto con 4 campi spiegati di seguito:
@@ -112,7 +112,7 @@ Serve a distinguere due tipi diversi di entry dentro `alternative_json`:
 
 - **`convergente: true`** — caso normale. La parafrasi è stata accettata perché, interrogando il modello, ha prodotto la stessa `risposta_pulita` (`true`/`false`) della domanda originale. Rappresenta quindi una ripetizione *stabile*: stesso significato logico, stesso esito del modello.
 
-- **`convergente: false`** — caso eccezionale. Per quella ripetizione il modello ha cambiato risposta su **ogni** parafrasi generata, fino a esaurire i `MAX_TENTATIVI_PARAFRASI` tentativi disponibili. Per non lasciare buchi nella lista, l'**ultima** parafrasi tentata viene comunque salvata in `alternative_json`, ma marcata `convergente: false` per segnalare che non è una vera conferma del riferimento ma un *fallback forzato*.
+- **`convergente: false`** — caso eccezionale. Per quella ripetizione il modello ha cambiato risposta su **ogni** variante generata, fino a esaurire i `MAX_TENTATIVI_VARIANTE` tentativi disponibili. Per non lasciare buchi nella lista, l'**ultima** parafrasi tentata viene comunque salvata in `alternative_json`, ma marcata `convergente: false` per segnalare che non è una vera conferma del riferimento ma un *fallback forzato*.
 
 ---
 

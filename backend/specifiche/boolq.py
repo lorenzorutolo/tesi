@@ -37,7 +37,8 @@ class BoolQSpec:
             "Answer:"
         )
 
-    def classe_di_token(self, token: str) -> str | None:
+    def classe_di_token(self, token: str, d: Domanda) -> str | None:
+        # ``d`` ignorato: il true/false non ha rimescolamento.
         t = token.strip().lower()
         if "true" in t or t in SINONIMI_TRUE:
             return "true"

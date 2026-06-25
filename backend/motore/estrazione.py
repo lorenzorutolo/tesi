@@ -8,7 +8,7 @@ from __future__ import annotations
 import math
 
 from .config import TOP_LOGPROBS
-from .tipi import DatasetSpec
+from .tipi import DatasetSpec, Domanda
 
 
 def _dist_vuota(spec: DatasetSpec) -> dict[str, float]:
@@ -17,12 +17,14 @@ def _dist_vuota(spec: DatasetSpec) -> dict[str, float]:
     return prob
 
 
-def estrai_distribuzione(resp: dict, spec: DatasetSpec) -> tuple[dict[str, float], list[str]]:
-    """Somma le probabilita' dei top token raggruppandole per classe.
+def estrai_distribuzione(resp: dict, spec: DatasetSpec, d: Domanda) -> tuple[dict[str, float], list[str]]:
+    """Somma le probabilita' dei top token raggruppandole per classe canonica.
 
     Considera solo la prima posizione (il modello deve rispondere con la classe
     come primo token). Ogni token viene mappato a una classe tramite
-    ``spec.classe_di_token``; i token non riconosciuti confluiscono in "altro".
+    ``spec.classe_di_token``, a cui passiamo la ``Domanda`` corrente ``d`` perche'
+    per il multiple-choice la lettera mostrata dipende dallo shuffle; i token non
+    riconosciuti confluiscono in "altro".
     """
     prob = _dist_vuota(spec)
     token_grezzi: list[str] = []
@@ -36,7 +38,7 @@ def estrai_distribuzione(resp: dict, spec: DatasetSpec) -> tuple[dict[str, float
         p = math.exp(candidato.get("logprob", -100))
         token_grezzi.append(f"'{token}': {p * 100:.8f}%")
 
-        classe = spec.classe_di_token(token)
+        classe = spec.classe_di_token(token, d)
         prob[classe if classe in prob else "altro"] += p
 
     return prob, token_grezzi
