@@ -54,13 +54,11 @@ class DatasetSpec(Protocol):
     - BoolQ: ``classi`` = ["true","false"], perturbazione = sola parafrasi.
     - Multiple-choice: ``classi`` sono le lettere delle
       opzioni (es. ["A","B","C","D","E"]); la perturbazione e' lo shuffle delle
-      opzioni (salvate in ``Domanda.dati``). La distribuzione e' in chiavi
-      CANONICHE: la lettera si riferisce sempre alla posizione ORIGINALE del
-      contenuto, non a quella mostrata dopo lo shuffle. Cosi' se il modello
-      sceglie sempre lo stesso contenuto la classe vincente resta stabile tra le
-      varianti e le distribuzioni sono direttamente confrontabili/mediabili.
-      La traduzione lettera-mostrata -> lettera-canonica avviene in
-      ``classe_di_token``, che per questo riceve la ``Domanda`` corrente.
+      opzioni (salvate in ``Domanda.dati``). Le lettere sono INCOLLATE al
+      contenuto: ogni opzione conserva la propria lettera anche dopo lo shuffle,
+      che cambia solo l'ORDINE di presentazione. Cosi' la lettera scelta dal
+      modello e' gia' la chiave canonica e le distribuzioni restano stabili e
+      confrontabili/mediabili tra le varianti, senza alcun rimappaggio.
     """
 
     nome: str           # identificatore usato dalla CLI (es. "boolq")
@@ -80,11 +78,10 @@ class DatasetSpec(Protocol):
         """Mappa un token del modello a una classe CANONICA, o None se non
         riconosciuto (in tal caso la probabilita' finisce nel bucket "altro").
 
-        Riceve la ``Domanda`` corrente perche' per il multiple-choice la lettera
-        mostrata dipende dallo shuffle: "B" sulla variante va tradotto nella
-        lettera ORIGINALE dell'opzione corrispondente, cosi' la distribuzione
-        resta in chiavi stabili. Per dataset senza rimescolamento (es. BoolQ)
-        ``d`` viene ignorato."""
+        Riceve la ``Domanda`` corrente per i dataset che ne avessero bisogno, ma
+        le implementazioni attuali non la usano: nel multiple-choice le lettere
+        sono incollate al contenuto (la lettera mostrata e' gia' canonica) e in
+        BoolQ non c'e' rimescolamento, quindi ``d`` viene ignorato."""
         ...
 
     def genera_variante(self, corrente: Domanda,

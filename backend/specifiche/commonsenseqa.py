@@ -5,13 +5,13 @@ grezzi, prompt a scelta multipla, riconoscimento della lettera scelta e
 generazione delle varianti tramite SHUFFLE delle opzioni.
 
 Scelta di design (vedi anche ``motore.tipi.DatasetSpec``):
-- la distribuzione e' in chiavi CANONICHE: la lettera si riferisce sempre alla
-  posizione ORIGINALE del contenuto, non a quella mostrata dopo lo shuffle. Cosi'
-  se il modello sceglie sempre lo stesso contenuto la classe vincente resta
-  stabile tra le varianti e le distribuzioni sono direttamente confrontabili
-  senza rimappare nulla;
-- la traduzione lettera-mostrata -> lettera-canonica avviene in
-  ``classe_di_token``, usando l'ordine delle opzioni salvato in ``Domanda.dati``.
+- le lettere sono INCOLLATE al contenuto: ogni opzione porta con se' la propria
+  lettera (la sua chiave canonica) anche dopo lo shuffle. Il prompt mostra quindi
+  le lettere canoniche in ordine rimescolato; la perturbazione cambia solo
+  l'ORDINE delle righe, non il legame lettera<->contenuto;
+- di conseguenza la lettera scelta dal modello E' GIA' la chiave canonica: non
+  serve alcun rimappaggio in ``classe_di_token``, e le distribuzioni restano in
+  chiavi stabili e direttamente confrontabili tra le varianti.
 """
 from __future__ import annotations
 
@@ -44,12 +44,10 @@ class CommonsenseQASpec:
         )
 
     def prompt_risposta(self, d: Domanda) -> str:
-        # Le lettere nel prompt seguono la POSIZIONE corrente (A, B, C, ...),
-        # non la lettera originale dell'opzione.
-        righe = [
-            f"{chr(ord('A') + i)}. {testo}"
-            for i, (_, testo) in enumerate(_opzioni(d))
-        ]
+        # Le lettere seguono il CONTENUTO (canoniche), mostrate nell'ordine
+        # rimescolato corrente: dopo lo shuffle compaiono non sequenziali. Cosi'
+        # la lettera scelta dal modello e' direttamente la chiave canonica.
+        righe = [f"{lettera}. {testo}" for lettera, testo in _opzioni(d)]
         opzioni_txt = "\n".join(righe)
         return (
             "You are a strict multiple-choice assistant. Read the question and the options carefully.\n"
@@ -60,17 +58,21 @@ class CommonsenseQASpec:
             "Answer:"
         )
 
+    def opzioni_mostrate(self, d: Domanda) -> list[tuple[str, str]]:
+        # (lettera, testo) nell'ordine di visualizzazione corrente. Le lettere
+        # sono gia' canoniche (incollate al contenuto), quindi coincidono con le
+        # chiavi della distribuzione. Hook OPZIONALE usato solo per la stampa a
+        # terminale: il motore lo invoca via getattr, BoolQ non lo definisce.
+        return list(_opzioni(d))
+
     def classe_di_token(self, token: str, d: Domanda) -> str | None:
-        # Riconosce la lettera scelta nell'ordine mostrato ("A", " A", "(B)",
-        # "c." -> A/B/C) e la traduce nella lettera ORIGINALE dell'opzione
-        # (chiave canonica, stabile sul contenuto al di la' dello shuffle).
+        # Corrispondenza ESATTA con una classe dopo aver tolto spazi e
+        # parentesi/punto attorno: "A", " a", "(A)", "A." -> A. Token composti
+        # come "AE", "BC", "Bs" NON sono la risposta e confluiscono in "altro".
+        # Le lettere sono gia' canoniche (incollate al contenuto): ``d`` ignorato.
         t = token.strip().strip("().").upper()
-        if not t or t[0] not in self.classi:
-            return None
-        i = ord(t[0]) - ord("A")
-        opzioni = _opzioni(d)
-        if 0 <= i < len(opzioni):
-            return opzioni[i][0]
+        if t in self.classi:
+            return t
         return None
 
     def genera_variante(self, corrente: Domanda,

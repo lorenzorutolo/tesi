@@ -132,16 +132,16 @@ Nelle scartate il campo `convergente` **non va interpretato**: tutte le entry in
 
 ## Cosa viene derivato a tempo di analisi
 
-Da queste colonne, `generatore_grafici.py` ricostruisce:
+Da queste colonne, `generatore_grafici.py` ricostruisce (in modo **dataset-agnostico**: le classi sono rilevate dalle chiavi di `probabilita`, escluso `altro`):
 
-- **Matrice di confusione "originale"** → da `alternative[0].risposta_pulita` vs `reale`
-- **Matrice di confusione "varianti"** → da `alternative[1:].risposta_pulita` vs `reale`
-- **Matrice di confusione "maggioranza"** → da `sum(probabilita["true"])` vs `sum(probabilita["false"])` su tutte le alternative
-- **Distribuzione voti** (es. `"3-0"`, `"2-1"`) → conteggio dei `risposta_pulita`
-- **Entropia binaria / ternaria** (min / max / avg / delta) → dai valori in `probabilita`
-- **Quartili di entropia, scatterplot, Pearson** → tutto dai valori in `probabilita`
+- **Accuratezza globale** Originale / Varianti / Maggioranza → conteggio `risposta_pulita` vs `reale` (la maggioranza è l'`argmax` della somma delle probabilità per classe). Vale per qualsiasi numero di classi.
+- **Matrice di confusione 2×2 + precision/recall** → generate **solo per dataset binari** (`true`/`false`); per il multiple-choice si mostra solo l'accuratezza globale.
+- **Entropia** (min / max / avg / delta + quartili, scatterplot, Pearson) → dai valori in `probabilita`, con la funzione unica `entropia(probs, classi, includi_altro)`:
+  - *senza altro* = entropia sulle sole classi valide (base = K) → per BoolQ coincide con l'entropia **binaria**;
+  - *con altro* = entropia su classi valide + `altro` (base = K+1) → per BoolQ coincide con l'entropia **ternaria**.
+  Per una multiple-choice a 5 opzioni si ottiene l'entropia su 5 o 6 classi.
 
-> **Nota:** `generatore_grafici.py` legge il campo strutturato `probabilita` (`{true, false, altro}`) prodotto dal motore: al caricamento (`_estrai_prob_piatte`) ne ricava i campi piatti `p_true_raw/p_false_raw/p_altri_raw` usati internamente dai grafici. È retro-compatibile con i CSV vecchi. Anche il frontend è allineato a `probabilita`.
+> **Nota:** `generatore_grafici.py` legge il campo strutturato `probabilita` prodotto dal motore (`{true, false, altro}` per BoolQ, `{A, B, C, D, E, altro}` per CommonsenseQA) e ci lavora direttamente, senza campi piatti intermedi. Anche il frontend è allineato a `probabilita`.
 
 
 ----

@@ -27,13 +27,48 @@ from .tipi import Alternativa, DatasetSpec, Domanda, RigaBenchmark
 # ============================================================
 # INTERROGAZIONE + CLASSIFICAZIONE (generica)
 # ============================================================
+def _fmt_distribuzione(prob: dict[str, float]) -> str:
+    """Riassunto a una riga: classi con prob > 0 in ordine decrescente, poi
+    "altro" se non nullo (es. ``B 87.42% · A 6.23% · altro 2.10%``)."""
+    voci = sorted(
+        ((c, p) for c, p in prob.items() if c != "altro" and p > 0),
+        key=lambda cp: cp[1],
+        reverse=True,
+    )
+    if prob.get("altro", 0.0) > 0:
+        voci.append(("altro", prob["altro"]))
+    return " · ".join(f"{c} {p * 100:.8f}%" for c, p in voci)
+
+
+def _stampa_interrogazione(
+    spec: DatasetSpec,
+    d: Domanda,
+    prob: dict[str, float],
+    dettagli: list[tuple[str, float, str]],
+) -> None:
+    """Stampa l'esito di una singola interrogazione. Path unico per tutti i
+    dataset; l'unico pezzo dataset-specifico e' il blocco delle opzioni, che
+    compare solo se la spec espone l'hook ``opzioni_mostrate`` (MC)."""
+    opzioni_mostrate = getattr(spec, "opzioni_mostrate", None)
+    if opzioni_mostrate is not None:
+        print("    Opzioni mostrate (lettere canoniche, ordine rimescolato):")
+        for lettera, testo in opzioni_mostrate(d):
+            print(f"      {lettera}. {testo}")
+
+    if dettagli:
+        print(f"    Top token (Top {TOP_LOGPROBS}):")
+        for token, p, etichetta in dettagli:
+            print(f"      '{token}' → {p * 100:.8f}% → classe {etichetta}")
+
+    print(f"    Distribuzione classi: {_fmt_distribuzione(prob)}")
+
+
 def interroga_e_classifica(spec: DatasetSpec, d: Domanda) -> Alternativa | None:
     resp = interroga_ollama(spec.prompt_risposta(d), num_predict=10, logprobs=True)
     if not resp:
         return None
-    prob, token_grezzi = estrai_distribuzione(resp, spec, d)
-    if token_grezzi:
-        print(f"    Vettore Token (Top {TOP_LOGPROBS}): [{', '.join(token_grezzi)}]")
+    prob, dettagli = estrai_distribuzione(resp, spec, d)
+    _stampa_interrogazione(spec, d, prob, dettagli)
     return Alternativa(
         domanda_alt=d.testo,
         risposta_pulita=classifica(prob),
@@ -44,6 +79,17 @@ def interroga_e_classifica(spec: DatasetSpec, d: Domanda) -> Alternativa | None:
 # ============================================================
 # LOOP DI CONVERGENZA 
 # ============================================================
+def _testo_gold(spec: DatasetSpec, domanda: Domanda) -> str:
+    """Suffisso ` → "<testo>"` con il contenuto dell'opzione gold, se la spec
+    espone le opzioni (MC); stringa vuota altrimenti (es. BoolQ)."""
+    opzioni_mostrate = getattr(spec, "opzioni_mostrate", None)
+    if opzioni_mostrate is not None:
+        for lettera, testo in opzioni_mostrate(domanda):
+            if lettera == domanda.reale:
+                return f' → "{testo}"'
+    return ""
+
+
 def elabora_domanda(spec: DatasetSpec, id_domanda: int, riga_dataset: dict) -> RigaBenchmark:
     domanda = spec.leggi_riga(riga_dataset)
     riga = RigaBenchmark(
@@ -51,15 +97,20 @@ def elabora_domanda(spec: DatasetSpec, id_domanda: int, riga_dataset: dict) -> R
         domanda=domanda.testo,
         reale=domanda.reale,
     )
+    n = RIPETIZIONI_PER_DOMANDA
+
+    print(f"  Q: {domanda.testo}")
+    print(f"  Gold: {domanda.reale}{_testo_gold(spec, domanda)}")
 
     # rep 0: domanda originale, fissa la risposta di riferimento
-    print(f"  - Original Question (1): {domanda.testo}")
+    print(f"\n  Rip. 1/{n} — originale")
     alt_originale = interroga_e_classifica(spec, domanda)
     if alt_originale is None:
         return riga
     riga.alternative.append(alt_originale)
     # riferimento = classe (canonica) della domanda originale.
     risposta_riferimento = alt_originale.risposta_pulita
+    print(f"    Risposta: {risposta_riferimento}   (riferimento fissato)")
     domanda_corrente = domanda
 
     # rep >= 1: varianti con retry finche' la risposta coincide con risposta_riferimento
@@ -73,16 +124,17 @@ def elabora_domanda(spec: DatasetSpec, id_domanda: int, riga_dataset: dict) -> R
             variante = spec.genera_variante(domanda_corrente, parafrasa)
             ultima_variante = variante
 
-            print(f"  - Alternative Question ({rep + 1}) [tentativo {tentativo + 1}]: {variante.testo}")
+            print(f"\n  Rip. {rep + 1}/{n} — variante [tentativo {tentativo + 1}]: {variante.testo}")
             alt = interroga_e_classifica(spec, variante)
             if alt is None:
                 continue
 
             if alt.risposta_pulita == risposta_riferimento:  # la variante converge: esce dal loop
+                print(f"    Risposta: {alt.risposta_pulita}   ✓ converge con riferimento '{risposta_riferimento}'")
                 alt_accettata = alt
                 variante_accettata = variante
                 break
-            print(f"    [scartata: '{alt.risposta_pulita}' != riferimento '{risposta_riferimento}']")
+            print(f"    Risposta: {alt.risposta_pulita}   ✗ scartata (≠ '{risposta_riferimento}')")
             tentativi_falliti.append(alt)
 
         if alt_accettata is not None:
@@ -92,7 +144,7 @@ def elabora_domanda(spec: DatasetSpec, id_domanda: int, riga_dataset: dict) -> R
         elif tentativi_falliti:  # raggiunto il numero massimo: tieni l'ultima e segnala non convergente
             ultima = tentativi_falliti[-1]
             ultima.convergente = False
-            print(f"  ! Rep {rep + 1} non convergente dopo {MAX_TENTATIVI_VARIANTE} tentativi: tenuta l'ultima")
+            print(f"  ! Rip. {rep + 1}/{n} non convergente dopo {MAX_TENTATIVI_VARIANTE} tentativi: tengo l'ultima (risposta {ultima.risposta_pulita})")
             riga.alternative.append(ultima)
             riga.scartate.extend(tentativi_falliti[:-1])
             # la domanda corrente resta l'ultima formulazione tentata

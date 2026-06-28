@@ -17,7 +17,9 @@ def _dist_vuota(spec: DatasetSpec) -> dict[str, float]:
     return prob
 
 
-def estrai_distribuzione(resp: dict, spec: DatasetSpec, d: Domanda) -> tuple[dict[str, float], list[str]]:
+def estrai_distribuzione(
+    resp: dict, spec: DatasetSpec, d: Domanda
+) -> tuple[dict[str, float], list[tuple[str, float, str]]]:
     """Somma le probabilita' dei top token raggruppandole per classe canonica.
 
     Considera solo la prima posizione (il modello deve rispondere con la classe
@@ -25,23 +27,29 @@ def estrai_distribuzione(resp: dict, spec: DatasetSpec, d: Domanda) -> tuple[dic
     ``spec.classe_di_token``, a cui passiamo la ``Domanda`` corrente ``d`` perche'
     per il multiple-choice la lettera mostrata dipende dallo shuffle; i token non
     riconosciuti confluiscono in "altro".
+
+    Restituisce ``(prob, dettagli)`` dove ``dettagli`` e' la lista dei top token
+    nell'ordine ricevuto, ciascuno come ``(token, p, etichetta)`` con ``etichetta``
+    la classe canonica gia' risolta (o "altro"). Il chiamante la riusa per la
+    stampa, senza ricalcolare la classificazione.
     """
     prob = _dist_vuota(spec)
-    token_grezzi: list[str] = []
+    dettagli: list[tuple[str, float, str]] = []
 
     logprobs = resp.get("logprobs", [])
     if not (isinstance(logprobs, list) and logprobs):
-        return prob, token_grezzi
+        return prob, dettagli
 
     for candidato in logprobs[0].get("top_logprobs", []):
         token = candidato.get("token", "")
         p = math.exp(candidato.get("logprob", -100))
-        token_grezzi.append(f"'{token}': {p * 100:.8f}%")
 
         classe = spec.classe_di_token(token, d)
-        prob[classe if classe in prob else "altro"] += p
+        etichetta = classe if classe in prob else "altro"
+        dettagli.append((token, p, etichetta))
+        prob[etichetta] += p
 
-    return prob, token_grezzi
+    return prob, dettagli
 
 
 def classifica(prob: dict[str, float]) -> str:

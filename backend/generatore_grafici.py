@@ -169,61 +169,77 @@ else:
             sys.exit(1)
     print(f"File '{NOME_FILE}' selezionato (esecuzione locale).")
 
-"""[4] Analizzatore di benchmark su accuratezza e entropia"""
+"""[4] Analizzatore di benchmark: accuratezza ed entropia (DATASET-AGNOSTICO)
 
-def calcola_entropia_ternaria(p_true: float, p_false: float, p_other: float) -> float:
-    somma = p_true + p_false + p_other
+Lo script non sa quali siano le classi del dataset: le rileva dalle chiavi del
+campo ``probabilita`` nel CSV (escludendo "altro"). Funziona quindi sia per BoolQ
+(classi {true, false}) sia per il multiple-choice (classi {A, B, C, D, E}).
+
+Una sola funzione di entropia, parametrizzata da ``includi_altro``:
+  - senza "altro": entropia sulle SOLE classi valide       -> base = K
+  - con   "altro": entropia su classi valide + "altro"     -> base = K + 1
+Usando base = numero di classi l'entropia resta normalizzata in [0, 1].
+Per BoolQ "senza altro" coincide con la vecchia entropia BINARIA e "con altro"
+con quella TERNARIA; per il multiple-choice si ottiene l'entropia su K o K+1
+classi a seconda che si includa o meno la massa "altro".
+"""
+
+
+def entropia(probs: dict, classi: list, includi_altro: bool = True) -> float:
+    """Entropia di Shannon normalizzata in [0, 1] sulla distribuzione di risposta.
+
+    ``classi`` sono le classi valide del dataset; con ``includi_altro`` si
+    aggiunge il bucket "altro". La base del log e' il numero di chiavi, cosi'
+    il massimo (distribuzione uniforme) vale esattamente 1.0.
+    """
+    chiavi = list(classi) + (["altro"] if includi_altro else [])
+    if len(chiavi) < 2:
+        return 0.0
+    valori = [probs.get(k, 0.0) for k in chiavi]
+    somma = sum(valori)
     if somma <= 0:
         return 0.0
+    p = [v / somma for v in valori]
+    return scipy_entropy(p, base=len(chiavi))
 
-    p_t = p_true / somma
-    p_f = p_false / somma
-    p_o = p_other / somma
 
-    # Usare base=3 fissa il limite massimo esattamente a 1.0
-    return scipy_entropy([p_t, p_f, p_o], base=3)
+def distribuzione_media(alternative: list, classi: list, includi_altro: bool) -> dict:
+    """Distribuzione media (ensemble) sulle ripetizioni, rinormalizzata per riga.
 
-def calcola_entropia_binaria(p_true: float, p_false: float) -> float:
-    somma = p_true + p_false
-    if somma <= 0:
-        return 0.0
-    # Normalizziamo ignorando p_other
-    p_t = p_true / somma
-    p_f = p_false / somma
+    Ogni ripetizione viene prima rinormalizzata sulle chiavi considerate, poi si
+    fa la media aritmetica delle distribuzioni valide (somma > 0).
+    """
+    chiavi = list(classi) + (["altro"] if includi_altro else [])
+    acc = {k: 0.0 for k in chiavi}
+    k_valide = 0
+    for alt in alternative:
+        prob = alt.get("probabilita", {})
+        somma = sum(prob.get(k, 0.0) for k in chiavi)
+        if somma > 0:
+            for k in chiavi:
+                acc[k] += prob.get(k, 0.0) / somma
+            k_valide += 1
+    if k_valide == 0:
+        return {k: 0.0 for k in chiavi}
+    return {k: acc[k] / k_valide for k in chiavi}
 
-    return scipy_entropy([p_t, p_f], base=2)
 
 class RisultatiBenchmark:
     def __init__(self):
-        # Matrice di confusione del VOTO DI MAGGIORANZA
-        self.tp, self.tn, self.fp, self.fn = 0, 0, 0, 0
-        # Matrice di confusione ORIGINALE
-        self.tp_orig, self.tn_orig, self.fp_orig, self.fn_orig = 0, 0, 0, 0
-        # Matrice di confusione MODIFICATE
-        self.tp_mod, self.tn_mod, self.fp_mod, self.fn_mod = 0, 0, 0, 0
-
+        # Classi valide del dataset (chiavi di "probabilita", senza "altro")
+        self.classi = []
         self.risultati_per_tabella = []
-        self.dist_corrette = {}
-        self.dist_errate = {}
-
-def _estrai_prob_piatte(alternative: list) -> None:
-    """Adatta il formato CSV nuovo a quello atteso dal resto dell'analisi.
-
-    Il motore ora scrive per ogni alternativa un campo strutturato
-    ``probabilita`` = {"true": .., "false": .., "altro": ..}, mentre tutto il
-    codice qui sotto legge i campi piatti storici
-    ``p_true_raw``/``p_false_raw``/``p_altri_raw``. Per non toccare i ~15 punti
-    di accesso, ricaviamo qui i campi piatti dal campo ``probabilita`` (in-place).
-
-    Retro-compatibile: se ``probabilita`` non c'e' (CSV vecchio) i campi piatti
-    eventualmente gia' presenti restano intatti.
-    """
-    for alt in alternative:
-        prob = alt.get("probabilita")
-        if isinstance(prob, dict):
-            alt["p_true_raw"] = prob.get("true", 0.0)
-            alt["p_false_raw"] = prob.get("false", 0.0)
-            alt["p_altri_raw"] = prob.get("altro", 0.0)
+        # Accuratezza ai tre livelli (conteggi corrette/totali): vale per ogni N
+        self.corrette_orig = 0
+        self.totali_orig = 0
+        self.corrette_mod = 0
+        self.totali_mod = 0
+        self.corrette_magg = 0
+        self.totali_magg = 0
+        # Matrici di confusione 2x2 (popolate solo per dataset binari, es. BoolQ)
+        self.tp = self.tn = self.fp = self.fn = 0
+        self.tp_orig = self.tn_orig = self.fp_orig = self.fn_orig = 0
+        self.tp_mod = self.tn_mod = self.fp_mod = self.fn_mod = 0
 
 
 def carica_da_csv(filename) -> RisultatiBenchmark:
@@ -231,115 +247,80 @@ def carica_da_csv(filename) -> RisultatiBenchmark:
     with open(filename, mode='r', encoding='utf-8') as file:
         reader = csv.DictReader(file)
         for row in reader:
-            risposta_reale = row["reale"].strip().lower()
+            reale = row["reale"].strip()
             alternative = json.loads(row["alternative_json"])
-            _estrai_prob_piatte(alternative)  # nuovo campo "probabilita" -> p_*_raw
+            if not alternative:
+                continue
 
-            # Maggioranza derivata dalle somme grezze delle probabilità
-            somma_t = sum(a.get("p_true_raw", 0.0) for a in alternative)
-            somma_f = sum(a.get("p_false_raw", 0.0) for a in alternative)
-            if somma_t > somma_f:
-                risposta_maggioranza = "true"
-            elif somma_f > somma_t:
-                risposta_maggioranza = "false"
-            else:
-                risposta_maggioranza = "pareggio"
-            esito_corretto = (risposta_maggioranza == risposta_reale)
+            # Rileva le classi del dataset dalla prima riga utile (chiavi di
+            # "probabilita" escluso "altro"). Mantiene l'ordine del motore.
+            if not risultati.classi:
+                chiavi = list(alternative[0].get("probabilita", {}).keys())
+                risultati.classi = [c for c in chiavi if c != "altro"]
+            classi = risultati.classi
+            binario = (len(classi) == 2)
 
-            # Distribuzione dei voti per maggioranza (es. "5-0", "3-2", ecc.)
-            conteggi = {"true": 0, "false": 0, "altri": 0}
+            # Maggioranza = argmax della SOMMA delle probabilita' per classe
+            # valida su tutte le ripetizioni (ensemble grezzo).
+            somma_cls = {c: 0.0 for c in classi}
             for a in alternative:
-                risp = a["risposta_pulita"].strip().lower()
-                conteggi[risp if risp in conteggi else "altri"] += 1
-            valori = sorted([conteggi["true"], conteggi["false"]], reverse=True)
-            generata_dist = f"{valori[0]}-{valori[1]}"
+                prob = a.get("probabilita", {})
+                for c in classi:
+                    somma_cls[c] += prob.get(c, 0.0)
+            risposta_maggioranza = max(somma_cls, key=somma_cls.get) if somma_cls else "altro"
+            esito_corretto = (risposta_maggioranza == reale)
 
-            # ORIGINALE (Indice 0)
-            risposta_originale = alternative[0]["risposta_pulita"].strip().lower()
-            if risposta_originale == "true" and risposta_reale == "true": risultati.tp_orig += 1
-            elif risposta_originale == "false" and risposta_reale == "false": risultati.tn_orig += 1
-            elif risposta_originale == "true" and risposta_reale == "false": risultati.fp_orig += 1
-            elif risposta_originale == "false" and risposta_reale == "true": risultati.fn_orig += 1
+            # Originale (indice 0)
+            risp_orig = alternative[0]["risposta_pulita"].strip()
+            risultati.totali_orig += 1
+            if risp_orig == reale:
+                risultati.corrette_orig += 1
 
-            # MODIFICATE (Indici da 1 a 4)
+            # Varianti (indici 1..)
             for alt in alternative[1:]:
-                risp_mod = alt["risposta_pulita"].strip().lower()
-                if risp_mod == "true" and risposta_reale == "true": risultati.tp_mod += 1
-                elif risp_mod == "false" and risposta_reale == "false": risultati.tn_mod += 1
-                elif risp_mod == "true" and risposta_reale == "false": risultati.fp_mod += 1
-                elif risp_mod == "false" and risposta_reale == "true": risultati.fn_mod += 1
+                risultati.totali_mod += 1
+                if alt["risposta_pulita"].strip() == reale:
+                    risultati.corrette_mod += 1
 
-            # MAGGIORANZA
+            # Maggioranza
+            risultati.totali_magg += 1
             if esito_corretto:
-                risultati.dist_corrette[generata_dist] = risultati.dist_corrette.get(generata_dist, 0) + 1
-                if risposta_reale == "true": risultati.tp += 1
-                else: risultati.tn += 1
-            else:
-                risultati.dist_errate[generata_dist] = risultati.dist_errate.get(generata_dist, 0) + 1
-                if risposta_reale == "false": risultati.fp += 1
-                else: risultati.fn += 1
+                risultati.corrette_magg += 1
+
+            # Matrici 2x2: hanno senso solo per dataset binari (true/false).
+            if binario:
+                if risp_orig == "true" and reale == "true":     risultati.tp_orig += 1
+                elif risp_orig == "false" and reale == "false": risultati.tn_orig += 1
+                elif risp_orig == "true" and reale == "false":  risultati.fp_orig += 1
+                elif risp_orig == "false" and reale == "true":  risultati.fn_orig += 1
+                for alt in alternative[1:]:
+                    rm = alt["risposta_pulita"].strip()
+                    if rm == "true" and reale == "true":     risultati.tp_mod += 1
+                    elif rm == "false" and reale == "false": risultati.tn_mod += 1
+                    elif rm == "true" and reale == "false":  risultati.fp_mod += 1
+                    elif rm == "false" and reale == "true":  risultati.fn_mod += 1
+                if esito_corretto:
+                    if reale == "true": risultati.tp += 1
+                    else: risultati.tn += 1
+                else:
+                    if reale == "false": risultati.fp += 1
+                    else: risultati.fn += 1
 
             risultati.risultati_per_tabella.append({
                 "id": int(row["id"]),
                 "domanda": row["domanda"],
-                "reale": risposta_reale,
+                "reale": reale,
                 "alternative": alternative,
-                "generata_dist": generata_dist,
-                "corretta": esito_corretto
+                "corretta": esito_corretto,
             })
     return risultati
 
-def analyzer(risultati: RisultatiBenchmark) -> RisultatiBenchmark:
-    for riga in risultati.risultati_per_tabella:
-        entropie_binarie = []
-        entropie_ternarie = []
-        somma_norm_t = 0.0
-        somma_norm_f = 0.0
 
-        for alt in riga["alternative"]:
-            p_t = alt.get("p_true_raw", 0.0)
-            p_f = alt.get("p_false_raw", 0.0)
-            p_o = alt.get("p_altri_raw", 0.0)
+"""[5] Funzioni di plotting (fattorizzate, riusate da tutti i blocchi)"""
 
-            ent_ternaria = calcola_entropia_ternaria(p_t, p_f, p_o)
-            entropie_ternarie.append(ent_ternaria)
-
-            # Calcolo entropia binaria per min/max
-            ent_binaria = calcola_entropia_binaria(p_t, p_f)
-            entropie_binarie.append(ent_binaria)
-
-            # Accumulo per la media della distribuzione
-            somma_binaria = p_t + p_f
-            if somma_binaria > 0:
-                somma_norm_t += p_t / somma_binaria
-                somma_norm_f += p_f / somma_binaria
-
-        k = len(riga["alternative"])
-        if k > 0:
-            # Metriche binarie normalizzate su True/False
-            riga["min_ent"] = min(entropie_binarie)
-            riga["max_ent"] = max(entropie_binarie)
-
-            # avg_ent: entropia della media delle distribuzioni binarie
-            riga["avg_ent"] = scipy_entropy(
-                [somma_norm_t / k, somma_norm_f / k],
-                base=2
-            )
-
-            # Salviamo anche le entropie ternarie per estrarle facilmente nei grafici
-            riga["entropie_ternarie"] = entropie_ternarie
-        else:
-            riga["min_ent"], riga["max_ent"], riga["avg_ent"] = 0.0, 0.0, 0.0
-            riga["entropie_ternarie"] = []
-
-    return risultati
-
-"""# MATRICI CONFUSIONI E PRECISION
-
-[5] Grafico accuratezza e confusion matrix della domanda originale/varianti/miste
-"""
 
 def stampa_matrice(tp, tn, fp, fn, titolo):
+    """Matrice di confusione 2x2 disegnata a mano (solo dataset binari)."""
     fig, ax = plt.subplots(figsize=(4, 3.2))
     ax.set_xlim(0, 3)
     ax.set_ylim(0, 3)
@@ -385,25 +366,6 @@ def stampa_matrice(tp, tn, fp, fn, titolo):
     plt.show()
 
 
-# Processa i dati
-res = carica_da_csv(NOME_FILE)
-res = analyzer(res)
-
-tot_orig = res.tp_orig + res.tn_orig + res.fp_orig + res.fn_orig
-tot_magg = res.tp + res.tn + res.fp + res.fn
-tot_mod = res.tp_mod + res.tn_mod + res.fp_mod + res.fn_mod
-
-# Calcoli accuratezza
-acc_orig = ((res.tp_orig + res.tn_orig) / tot_orig) * 100 if NUM_TEST > 0 else 0
-acc_mod = ((res.tp_mod + res.tn_mod) / tot_mod) * 100 if tot_mod > 0 else 0
-acc_maggioranza = ((res.tp + res.tn) / tot_magg) * 100 if NUM_TEST > 0 else 0
-
-print(f"ACCURATEZZA ORIGINALI: {acc_orig:.4f}% | VARIANTI: {acc_mod:.4f}% | MAGGIORANZA: {acc_maggioranza:.4f}%")
-
-stampa_matrice(res.tp_orig, res.tn_orig, res.fp_orig, res.fn_orig, f"Originale ({acc_orig:.1f}%)")
-stampa_matrice(res.tp_mod,  res.tn_mod,  res.fp_mod,  res.fn_mod,  f"Varianti ({acc_mod:.1f}%)")
-stampa_matrice(res.tp,      res.tn,      res.fp,      res.fn,      f"Maggioranza ({acc_maggioranza:.1f}%)")
-
 def stampa_metriche(tp, tn, fp, fn, nome):
     precision = tp / (tp + fp) if (tp + fp) > 0 else 0
     recall    = tp / (tp + fn) if (tp + fn) > 0 else 0
@@ -417,1207 +379,235 @@ def stampa_metriche(tp, tn, fp, fn, nome):
     print(f"Recall   : {recall:.4f}")
     print()
 
-stampa_metriche(res.tp_orig, res.tn_orig, res.fp_orig, res.fn_orig, "Originale")
-stampa_metriche(res.tp_mod,  res.tn_mod,  res.fp_mod,  res.fn_mod,  "Varianti")
-stampa_metriche(res.tp,      res.tn,      res.fp,      res.fn,      "Maggioranza")
 
-"""# ENTROPIA MASSIMA E MEDIA, RISPOSTE CORRETTE/SBAGLIATE
+def _scatter_box(ax, corrette, errate):
+    """Boxplot + scatter con jitter di due gruppi (corrette / errate)."""
+    bp = ax.boxplot([corrette, errate], positions=[1, 2], widths=0.4,
+                    patch_artist=True, showfliers=False, zorder=1)
+    for patch, edge in zip(bp['boxes'], ['#4CAF50', '#F44336']):
+        patch.set_facecolor('#FFFFFF')
+        patch.set_edgecolor(edge)
+        patch.set_linewidth(1.5)
+    for median in bp['medians']:
+        median.set(color='black', linewidth=2)
 
-[8] Distribuzione MaxEnt per Domande Corrette ed Errate
-"""
+    jc = np.random.normal(1, 0.05, size=len(corrette))
+    je = np.random.normal(2, 0.05, size=len(errate))
+    ax.scatter(jc, corrette, alpha=0.6, color='#4CAF50', edgecolors='white',
+               linewidth=0.5, label=f'Esatte ({len(corrette)})', zorder=2)
+    ax.scatter(je, errate, alpha=0.6, color='#F44336', edgecolors='white',
+               linewidth=0.5, label=f'Sbagliate ({len(errate)})', zorder=2)
 
-max_ent_corrette = [r.get("max_ent", 0.0) for r in res.risultati_per_tabella if r["corretta"]]
-max_ent_errate = [r.get("max_ent", 0.0) for r in res.risultati_per_tabella if not r["corretta"]]
+    ax.set_xticks([1, 2])
+    ax.set_xticklabels(['Risposte Esatte', 'Risposte Sbagliate'],
+                       fontsize=11, fontweight='bold')
+    ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.1), ncol=2)
+    ax.grid(axis='y', linestyle='--', alpha=0.7, zorder=0)
 
-fig, ax = plt.subplots(figsize=(8, 5), dpi=100)
-dati_max = [max_ent_corrette if max_ent_corrette else [0.0], max_ent_errate if max_ent_errate else [0.0]]
-bplot = ax.boxplot(dati_max, tick_labels=['Corrette', 'Errate'], patch_artist=True)
 
-colors = ['#4CAF50', '#F44336']
-for patch, color in zip(bplot['boxes'], colors):
-    patch.set_facecolor(color)
-    patch.set_alpha(0.7)
+def plot_corrette_errate(valori, esiti, titolo, ylabel, ylim=(-0.05, 1.05)):
+    """Boxplot+scatter di una metrica per gruppi corrette/errate, con Pearson."""
+    corrette = [v for v, ok in zip(valori, esiti) if ok]
+    errate = [v for v, ok in zip(valori, esiti) if not ok]
+    fig, ax = plt.subplots(figsize=(8, 6), dpi=100)
+    _scatter_box(ax, corrette, errate)
+    ax.set_title(titolo, pad=15)
+    ax.set_ylabel(ylabel)
+    if ylim is not None:
+        ax.set_ylim(*ylim)
+    if len(valori) > 1:
+        corr = [0 if ok else 1 for ok in esiti]
+        pr = stats.pearsonr(valori, corr)
+        print(f"  Pearson r = {pr.statistic:.4f} (p={pr.pvalue:.2e}) — {titolo}")
+    plt.show()
 
-ax.set_title("Distribuzione MaxEnt per Domande Corrette ed Errate")
-ax.set_ylabel("Entropia Massima (MaxEnt)")
+
+def plot_accuratezza_quartili(valori, esiti, titolo, colore='#2196F3', edge='#1565C0'):
+    """Accuratezza per quartili della metrica (Q1 = piu' sicuro ... Q4 = piu' indeciso)."""
+    if not valori:
+        return
+    limiti = np.percentile(valori, [0, 25, 50, 75, 100])
+    etichette = [f"Q{i+1}\n({limiti[i]:.4f} - {limiti[i+1]:.4f})" for i in range(4)]
+    corrette = [0] * 4
+    totali = [0] * 4
+    for v, ok in zip(valori, esiti):
+        idx = min(max(int(np.digitize(v, limiti)) - 1, 0), 3)
+        totali[idx] += 1
+        if ok:
+            corrette[idx] += 1
+    acc = [(c / t * 100) if t > 0 else 0.0 for c, t in zip(corrette, totali)]
+
+    fig, ax = plt.subplots(figsize=(9, 5), dpi=100)
+    barre = ax.bar(etichette, acc, color=colore, alpha=0.8, edgecolor=edge, linewidth=1.5)
+    for bar, t in zip(barre, totali):
+        h = bar.get_height()
+        ax.annotate(f'{h:.2f}%\n(n={t})',
+                    xy=(bar.get_x() + bar.get_width() / 2, h),
+                    xytext=(0, 3), textcoords="offset points",
+                    ha='center', va='bottom', fontweight='bold', fontsize=9)
+    ax.set_title(titolo, pad=15)
+    ax.set_xlabel("Quartili (Q1 = Più Sicuro  ⟶  Q4 = Più Indeciso)")
+    ax.set_ylabel("Accuratezza (%)")
+    ax.set_ylim(0, 115)
+    ax.grid(axis='y', linestyle='--', alpha=0.7)
+    plt.show()
+
+
+def raccogli_entropia(res, livello, includi_altro):
+    """(valori_entropia, esiti) per ``livello`` in {originale, maggioranza, tutte}.
+
+    - originale: entropia della sola variante originale (indice 0);
+    - tutte: entropia di ogni variante (originale + perturbate);
+    - maggioranza: entropia della distribuzione media (ensemble) della domanda.
+    L'esito (corretta/errata) e' coerente col livello.
+    """
+    classi = res.classi
+    valori = []
+    esiti = []
+    for riga in res.risultati_per_tabella:
+        if livello == "originale":
+            alt = riga["alternative"][0]
+            valori.append(entropia(alt.get("probabilita", {}), classi, includi_altro))
+            esiti.append(alt["risposta_pulita"].strip() == riga["reale"])
+        elif livello == "tutte":
+            for alt in riga["alternative"]:
+                valori.append(entropia(alt.get("probabilita", {}), classi, includi_altro))
+                esiti.append(alt.get("risposta_pulita", "").strip() == riga["reale"])
+        elif livello == "maggioranza":
+            media = distribuzione_media(riga["alternative"], classi, includi_altro)
+            valori.append(entropia(media, classi, includi_altro))
+            esiti.append(riga["corretta"])
+    return valori, esiti
+
+
+"""[6] Esecuzione: caricamento e rilevamento delle classi"""
+
+res = carica_da_csv(NOME_FILE)
+
+K = len(res.classi)
+binario = (K == 2)
+print(f"Classi rilevate: {res.classi} (K={K}) | dataset {'BINARIO' if binario else 'MULTI-CLASSE'}")
+
+"""[7] Accuratezza globale (Originale / Varianti / Maggioranza)"""
+
+acc_orig = res.corrette_orig / res.totali_orig * 100 if res.totali_orig else 0.0
+acc_mod = res.corrette_mod / res.totali_mod * 100 if res.totali_mod else 0.0
+acc_magg = res.corrette_magg / res.totali_magg * 100 if res.totali_magg else 0.0
+print(f"ACCURATEZZA  Originali: {acc_orig:.2f}%  |  Varianti: {acc_mod:.2f}%  |  Maggioranza: {acc_magg:.2f}%")
+
+fig, ax = plt.subplots(figsize=(7, 5), dpi=100)
+nomi = ['Originale', 'Varianti', 'Maggioranza']
+valori_acc = [acc_orig, acc_mod, acc_magg]
+barre = ax.bar(nomi, valori_acc, color=['#2196F3', '#FF9800', '#4CAF50'],
+               alpha=0.85, edgecolor='#37474F', linewidth=1.2)
+for bar, v in zip(barre, valori_acc):
+    ax.annotate(f'{v:.2f}%', xy=(bar.get_x() + bar.get_width() / 2, v),
+                xytext=(0, 3), textcoords="offset points", ha='center',
+                va='bottom', fontweight='bold', fontsize=11)
+ax.set_title("Accuratezza globale (Originale / Varianti / Maggioranza)", pad=15)
+ax.set_ylabel("Accuratezza (%)")
+ax.set_ylim(0, 115)
 ax.grid(axis='y', linestyle='--', alpha=0.7)
 plt.show()
 
-"""[9] Distribuzione AvgEnt per Domande Corrette ed Errate"""
+"""[8] Matrici di confusione 2x2 + precision/recall: SOLO dataset binari"""
 
-avg_ent_corrette = [r.get("avg_ent", 0.0) for r in res.risultati_per_tabella if r["corretta"]]
-avg_ent_errate = [r.get("avg_ent", 0.0) for r in res.risultati_per_tabella if not r["corretta"]]
+if binario:
+    stampa_matrice(res.tp_orig, res.tn_orig, res.fp_orig, res.fn_orig, f"Originale ({acc_orig:.1f}%)")
+    stampa_matrice(res.tp_mod,  res.tn_mod,  res.fp_mod,  res.fn_mod,  f"Varianti ({acc_mod:.1f}%)")
+    stampa_matrice(res.tp,      res.tn,      res.fp,      res.fn,      f"Maggioranza ({acc_magg:.1f}%)")
+    stampa_metriche(res.tp_orig, res.tn_orig, res.fp_orig, res.fn_orig, "Originale")
+    stampa_metriche(res.tp_mod,  res.tn_mod,  res.fp_mod,  res.fn_mod,  "Varianti")
+    stampa_metriche(res.tp,      res.tn,      res.fp,      res.fn,      "Maggioranza")
+else:
+    print("Dataset multi-classe: matrice 2x2 e precision/recall binarie omesse "
+          "(si veda l'accuratezza globale qui sopra).")
 
-fig, ax = plt.subplots(figsize=(8, 5), dpi=100)
-dati_avg = [avg_ent_corrette if avg_ent_corrette else [0.0], avg_ent_errate if avg_ent_errate else [0.0]]
-bplot = ax.boxplot(dati_avg, tick_labels=['Corrette', 'Errate'], patch_artist=True)
+"""[9] Entropia vs accuratezza, per livello x (senza / con "altro")
 
-colors = ['#4CAF50', '#F44336']
-for patch, color in zip(bplot['boxes'], colors):
-    patch.set_facecolor(color)
-    patch.set_alpha(0.7)
-
-ax.set_title("Distribuzione AvgEnt per Domande Corrette ed Errate")
-ax.set_ylabel("Entropia Media (AvgEnt) [0.0 - 1.0]")
-ax.set_ylim(-0.05, 1.05)
-ax.grid(axis='y', linestyle='--', alpha=0.7)
-plt.show()
-
-"""# DOMANDE ORIGINALI
-
-[11]
+Genera, per ogni combinazione, il boxplot+scatter corrette/errate e le barre di
+accuratezza per quartili di entropia. Per BoolQ "senza altro"=binaria,
+"con altro"=ternaria; per il multiple-choice = entropia su K o K+1 classi.
 """
 
-# Liste per separare le entropie
-entropie_corrette_orig = []
-entropie_errate_orig = []
-vettore_correttezza = []  # 0 se corretta, 1 se sbagliata
-vettore_entropia = []     # Valore dell'entropia corrispondente
+LIVELLI = [
+    ("originale", "Domanda Originale"),
+    ("maggioranza", "Risposta di Maggioranza"),
+    ("tutte", "Originale + Varianti"),
+]
 
-if 'res' in locals() and res.risultati_per_tabella:
+for includi_altro in (False, True):
+    n_cls = K + (1 if includi_altro else 0)
+    tag = f"{'con' if includi_altro else 'senza'} altro, {n_cls} classi"
+    colore, edge = ('#FF9800', '#E65100') if includi_altro else ('#2196F3', '#1565C0')
+    for livello, etich in LIVELLI:
+        valori, esiti = raccogli_entropia(res, livello, includi_altro)
+        plot_corrette_errate(
+            valori, esiti,
+            f"Entropia ({tag}) — {etich} vs Accuratezza",
+            f"Entropia normalizzata [0=Sicuro, 1=Indeciso] ({tag})")
+        plot_accuratezza_quartili(
+            valori, esiti,
+            f"Accuratezza per Quartili di Entropia ({tag}) — {etich}",
+            colore=colore, edge=edge)
 
+"""[10] MaxEnt e Delta entropia per domanda (stabilita' tra ripetizioni)"""
+
+for includi_altro in (False, True):
+    n_cls = K + (1 if includi_altro else 0)
+    tag = f"{'con' if includi_altro else 'senza'} altro, {n_cls} classi"
+    maxent = []
+    delta = []
+    esiti_row = []
     for riga in res.risultati_per_tabella:
-        # Estraiamo SOLO la domanda originale (indice 0 della lista alternative)
-        alt_orig = riga["alternative"][0]
-
-        # Calcolo Entropia di Shannon tramite funzione
-        ent = calcola_entropia_binaria(alt_orig.get("p_true_raw", 0.0), alt_orig.get("p_false_raw", 0.0))
-        # Verifichiamo se LA RISPOSTA ORIGINALE era corretta o sbagliata
-        risp_orig = alt_orig["risposta_pulita"].strip().lower()
-        risp_reale = riga["reale"].strip().lower()
-
-        vettore_entropia.append(ent)
-        if risp_orig == risp_reale:
-            entropie_corrette_orig.append(ent)
-            vettore_correttezza.append(0)
-        else:
-            entropie_errate_orig.append(ent)
-            vettore_correttezza.append(1)
-
-    fig, ax = plt.subplots(figsize=(8, 6), dpi=100)
-
-    data_to_plot = [entropie_corrette_orig, entropie_errate_orig]
-
-    bp = ax.boxplot(data_to_plot, positions=[1, 2], widths=0.4, patch_artist=True, showfliers=False, zorder=1)
-
-    box_colors = ['#FFFFFF', '#FFFFFF']
-    box_edges = ['#4CAF50', '#F44336']
-
-    for patch, color, edge in zip(bp['boxes'], box_colors, box_edges):
-        patch.set_facecolor(color)
-        patch.set_edgecolor(edge)
-        patch.set_linewidth(1.5)
-
-    for median in bp['medians']:
-        median.set(color='black', linewidth=2)
-
-    jitter_corrette = np.random.normal(1, 0.05, size=len(entropie_corrette_orig))
-    jitter_errate = np.random.normal(2, 0.05, size=len(entropie_errate_orig))
-
-    ax.scatter(jitter_corrette, entropie_corrette_orig, alpha=0.6, color='#4CAF50',
-               edgecolors='white', linewidth=0.5, label=f'Esatte ({len(entropie_corrette_orig)})', zorder=2)
-
-    ax.scatter(jitter_errate, entropie_errate_orig, alpha=0.6, color='#F44336',
-               edgecolors='white', linewidth=0.5, label=f'Sbagliate ({len(entropie_errate_orig)})', zorder=2)
-
-    ax.set_xticks([1, 2])
-    ax.set_xticklabels(['Risposte Esatte', 'Risposte Sbagliate'], fontsize=11, fontweight='bold')
-    ax.set_title("Distribuzione dell'Entropia (Domanda Originale) in base all'Accuratezza", pad=15)
-    ax.set_ylabel("Entropia [0.0 = Sicuro, 1.0 = Indeciso]")
-    ax.set_ylim(-0.05, 1.05)
-    ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.1), ncol=2)
-    ax.grid(axis='y', linestyle='--', alpha=0.7, zorder=0)
-
-    pearson_result = stats.pearsonr(vettore_entropia, vettore_correttezza)
-    print(f"Coefficiente di correlazione di Pearson: {pearson_result.statistic}")
-
-    plt.show()
-
-else:
-    print("⚠️ Dati non trovati. Assicurati di aver eseguito i blocchi precedenti per caricare il CSV nell'oggetto 'res'.")
-
-"""[12]"""
-
-if 'res' in locals() and res.risultati_per_tabella:
-
-    dati_estratti = []
-
-    for riga in res.risultati_per_tabella:
-        # Estraiamo SOLO la domanda originale (indice 0)
-        alt_orig = riga["alternative"][0]
-
-        # Calcolo Entropia per la domanda originale
-        ent = calcola_entropia_binaria(alt_orig.get("p_true_raw", 0.0), alt_orig.get("p_false_raw", 0.0))
-
-        # Verifichiamo se la risposta era corretta
-        risp_orig = alt_orig["risposta_pulita"].strip().lower()
-        risp_reale = riga["reale"].strip().lower()
-        esito = (risp_orig == risp_reale)
-
-        dati_estratti.append({"entropia": ent, "corretto": esito})
-
-    # CALCOLO QUARTILI: Estraiamo solo le entropie
-    entropie = [d["entropia"] for d in dati_estratti]
-
-    # Calcoliamo i limiti dei 4 quartili (0%, 25%, 50%, 75%, 100%)
-    limiti_quartili = np.percentile(entropie, [0, 25, 50, 75, 100])
-
-    # Creiamo le etichette indicando Q1, Q2, Q3, Q4 e i rispettivi range
-    etichette_bins = [f"Q{i+1}\n({limiti_quartili[i]:.4f} - {limiti_quartili[i+1]:.4f})" for i in range(4)]
-
-    corrette_per_bin = [0] * 4
-    totali_per_bin = [0] * 4
-
-    for dato in dati_estratti:
-        ent = dato["entropia"]
-
-        indice_bin = np.digitize(ent, limiti_quartili) - 1
-
-        indice_bin = min(max(indice_bin, 0), 3)
-
-        totali_per_bin[indice_bin] += 1
-        if dato["corretto"]:
-            corrette_per_bin[indice_bin] += 1
-
-    # Calcolo Accuratezza percentuale per ogni quartile
-    accuratezze = []
-    for c, t in zip(corrette_per_bin, totali_per_bin):
-        if t > 0:
-            accuratezze.append((c / t) * 100)
-        else:
-            accuratezze.append(0.0)
-
-    fig, ax = plt.subplots(figsize=(9, 5), dpi=100)
-
-    barre = ax.bar(etichette_bins, accuratezze, color='#2196F3', alpha=0.8, edgecolor='#1565C0', linewidth=1.5)
-
-    for bar, t in zip(barre, totali_per_bin):
-        altezza = bar.get_height()
-        ax.annotate(f'{altezza:.2f}%\n(n={t})',
-                    xy=(bar.get_x() + bar.get_width() / 2, altezza),
-                    xytext=(0, 3), textcoords="offset points",
-                    ha='center', va='bottom', fontweight='bold', fontsize=9)
-
-    ax.set_title("Accuratezza per Quartili di Entropia (Solo Domanda Originale)", pad=15)
-    ax.set_xlabel("Quartili (Q1 = Più Sicuro  ⟶  Q4 = Più Indeciso)")
-    ax.set_ylabel("Accuratezza (%)")
-    ax.set_ylim(0, 115)
-    ax.grid(axis='y', linestyle='--', alpha=0.7)
-
-    plt.show()
-
-else:
-    print("⚠️ Dati non trovati. Assicurati di aver eseguito i blocchi precedenti per caricare il CSV nell'oggetto 'res'.")
-
-"""# DOMANDE MAGGIORANZA
-
-[13]
-"""
-
-entropie_corrette_avg = []
-entropie_errate_avg = []
-vettore_correttezza = []  # 0 se corretta, 1 se sbagliata
-vettore_entropia = []     # Valore dell'entropia corrispondente
-
-num_bins = 5
-limiti_bins = np.linspace(0, 1, num_bins + 1)
-etichette_bins = [f"{limiti_bins[i]:.4f} - {limiti_bins[i+1]:.4f}" for i in range(num_bins)]
-corrette_per_bin = [0] * num_bins
-totali_per_bin = [0] * num_bins
-
-if 'res' in locals() and res.risultati_per_tabella:
-
-    for riga in res.risultati_per_tabella:
-        somma_norm_t = 0.0
-        somma_norm_f = 0.0
-        k_valide = 0
-
-        # Estrazione e normalizzazione
-        for alt in riga["alternative"]:
-            p_t = alt.get("p_true_raw", 0.0)
-            p_f = alt.get("p_false_raw", 0.0)
-
-            somma_raw = p_t + p_f
-            if somma_raw > 0:
-                somma_norm_t += p_t / somma_raw
-                somma_norm_f += p_f / somma_raw
-                k_valide += 1
-
-        if k_valide > 0:
-            # Distribuzione media
-            media_t = somma_norm_t / k_valide
-            media_f = somma_norm_f / k_valide
-
-            # Entropia della media
-            ent_media = calcola_entropia_binaria(media_t, media_f)
-
-            risp_predetta = "true" if media_t > media_f else "false"
-            risp_reale = riga["reale"].strip().lower()
-            esito_corretto = (risp_predetta == risp_reale)
-
-            vettore_entropia.append(ent_media)
-            # Raccolta dati
-            if esito_corretto:
-                entropie_corrette_avg.append(ent_media)
-                vettore_correttezza.append(0)
-            else:
-                entropie_errate_avg.append(ent_media)
-                vettore_correttezza.append(1)
-
-            indice_bin = min(int(ent_media * num_bins), num_bins - 1)
-            totali_per_bin[indice_bin] += 1
-            if esito_corretto:
-                corrette_per_bin[indice_bin] += 1
-
-    fig1, ax1 = plt.subplots(figsize=(8, 6), dpi=100)
-
-    data_to_plot = [entropie_corrette_avg, entropie_errate_avg]
-
-    bp = ax1.boxplot(data_to_plot, positions=[1, 2], widths=0.4, patch_artist=True, showfliers=False, zorder=1)
-
-    box_colors = ['#FFFFFF', '#FFFFFF']
-    box_edges = ['#4CAF50', '#F44336']
-
-    for patch, color, edge in zip(bp['boxes'], box_colors, box_edges):
-        patch.set_facecolor(color)
-        patch.set_edgecolor(edge)
-        patch.set_linewidth(1.5)
-
-    for median in bp['medians']:
-        median.set(color='black', linewidth=2)
-
-    jitter_c = np.random.normal(1, 0.05, size=len(entropie_corrette_avg))
-    jitter_e = np.random.normal(2, 0.05, size=len(entropie_errate_avg))
-
-    ax1.scatter(jitter_c, entropie_corrette_avg, alpha=0.6, color='#4CAF50',
-                edgecolors='white', linewidth=0.5, label=f'Esatte ({len(entropie_corrette_avg)})', zorder=2)
-
-    ax1.scatter(jitter_e, entropie_errate_avg, alpha=0.6, color='#F44336',
-                edgecolors='white', linewidth=0.5, label=f'Sbagliate ({len(entropie_errate_avg)})', zorder=2)
-
-    ax1.set_xticks([1, 2])
-    ax1.set_xticklabels(['Risposte Esatte', 'Risposte Sbagliate'], fontsize=11, fontweight='bold')
-    ax1.set_title("Scatterplot e Boxplot: Distribuzione dell'Entropia (Risposta di maggioranza) in base all'Accuratezza", pad=15)
-    ax1.set_ylabel("Entropia [0.0 = Sicuro, 1.0 = Indeciso]")
-    ax1.set_ylim(-0.05, 1.05)
-    ax1.legend(loc='upper center', bbox_to_anchor=(0.5, -0.1), ncol=2)
-    ax1.grid(axis='y', linestyle='--', alpha=0.7, zorder=0)
-
-    pearson_result = stats.pearsonr(vettore_entropia, vettore_correttezza)
-    print(f"Coefficiente di correlazione di Pearson: {pearson_result.statistic}")
-
-    plt.show()
-
-else:
-    print("⚠️ Dati non trovati. Assicurati di aver eseguito i blocchi precedenti per caricare il CSV nell'oggetto 'res'.")
-
-"""[14]"""
-
-if 'totali_per_bin' in locals():
-
-    valori_entropia = [r.get("avg_ent", 0.0) for r in res.risultati_per_tabella]
-
-    limiti_quartili = np.percentile(valori_entropia, [0, 25, 50, 75, 100])
-
-    corrette_per_q = [0] * 4
-    totali_per_q = [0] * 4
-
-    for r in res.risultati_per_tabella:
-        ent = r.get("avg_ent", 0.0)
-        corretta = r.get("corretta", False)
-
-        indice_q = np.digitize(ent, limiti_quartili) - 1
-        indice_q = min(max(indice_q, 0), 3)
-
-        totali_per_q[indice_q] += 1
-        if corretta:
-            corrette_per_q[indice_q] += 1
-
-    # Calcolo dell'accuratezza percentuale per quartile
-    accuratezze = []
-    for c, t in zip(corrette_per_q, totali_per_q):
-        if t > 0:
-            accuratezze.append((c / t) * 100)
-        else:
-            accuratezze.append(0.0)
-
-    fig, ax = plt.subplots(figsize=(8, 5), dpi=100)
-
-    etichette_q = [f"Q{i+1}\n({limiti_quartili[i]:.4f} - {limiti_quartili[i+1]:.4f})" for i in range(4)]
-
-    barre = ax.bar(etichette_q, accuratezze, color='#2196F3', alpha=0.85,
-                   edgecolor='#1565C0', linewidth=1.2, width=0.6)
-
-    for bar, acc, n in zip(barre, accuratezze, totali_per_q):
-        ax.annotate(f'{acc:.2f}%\n(n={n})',
-                    xy=(bar.get_x() + bar.get_width() / 2, acc),
-                    xytext=(0, 5), textcoords="offset points",
-                    ha='center', va='bottom', fontweight='bold', fontsize=11)
-
-    ax.set_title("Accuratezza per quartili di Entropia (Domanda di maggioranza)", pad=15)
-    ax.set_ylabel("Accuratezza (%)")
-    ax.set_ylim(0, 115)
-    ax.grid(axis='y', linestyle='--', alpha=0.7)
-    ax.legend()
-    plt.show()
-
-else:
-    print("⚠️ Dati non trovati. Esegui prima il blocco 6.1 per generare i conteggi.")
-
-"""#TUTTE LE DOMANDE
-
-"""
-
-entropie_corrette_all = []
-entropie_errate_all = []
-vettore_correttezza_all = []  # 0 se corretta, 1 se sbagliata
-vettore_entropia_all = []     # Valore dell'entropia corrispondente
-
-if 'res' in locals() and res.risultati_per_tabella:
-
-    for riga in res.risultati_per_tabella:
-        for alt in riga["alternative"]:
-
-            p_t = alt.get("p_true_raw", 0.0)
-            p_f = alt.get("p_false_raw", 0.0)
-            ent = calcola_entropia_binaria(p_t, p_f)
-
-            risp_alt = alt.get("risposta_pulita", "").strip().lower()
-            risp_reale = riga["reale"].strip().lower()
-
-            vettore_entropia_all.append(ent)
-
-            if risp_alt == risp_reale:
-                entropie_corrette_all.append(ent)
-                vettore_correttezza_all.append(0)
-            else:
-                entropie_errate_all.append(ent)
-                vettore_correttezza_all.append(1)
-
-    fig, ax = plt.subplots(figsize=(8, 6), dpi=100)
-
-    data_to_plot = [entropie_corrette_all, entropie_errate_all]
-
-    bp = ax.boxplot(data_to_plot, positions=[1, 2], widths=0.4, patch_artist=True, showfliers=False, zorder=1)
-
-    box_colors = ['#FFFFFF', '#FFFFFF']
-    box_edges = ['#4CAF50', '#F44336']
-
-    for patch, color, edge in zip(bp['boxes'], box_colors, box_edges):
-        patch.set_facecolor(color)
-        patch.set_edgecolor(edge)
-        patch.set_linewidth(1.5)
-
-    for median in bp['medians']:
-        median.set(color='black', linewidth=2)
-
-    jitter_corrette = np.random.normal(1, 0.05, size=len(entropie_corrette_all))
-    jitter_errate = np.random.normal(2, 0.05, size=len(entropie_errate_all))
-
-    ax.scatter(jitter_corrette, entropie_corrette_all, alpha=0.5, color='#4CAF50',
-               edgecolors='white', linewidth=0.5, label=f'Esatte ({len(entropie_corrette_all)})', zorder=2)
-
-    ax.scatter(jitter_errate, entropie_errate_all, alpha=0.5, color='#F44336',
-               edgecolors='white', linewidth=0.5, label=f'Sbagliate ({len(entropie_errate_all)})', zorder=2)
-
-    ax.set_xticks([1, 2])
-    ax.set_xticklabels(['Risposte Esatte', 'Risposte Sbagliate'], fontsize=11, fontweight='bold')
-    ax.set_title("Distribuzione Entropia (Originale + Varianti) vs Accuratezza", pad=15)
-    ax.set_ylabel("Entropia [0.0 = Sicuro, 1.0 = Indeciso]")
-    ax.set_ylim(-0.05, 1.05)
-    ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.1), ncol=2)
-    ax.grid(axis='y', linestyle='--', alpha=0.7, zorder=0)
-
-    if len(vettore_entropia_all) > 1:
-        pearson_result = stats.pearsonr(vettore_entropia_all, vettore_correttezza_all)
-        print(f"Coefficiente di correlazione di Pearson: {pearson_result.statistic}")
-
-    plt.show()
-
-else:
-    print("⚠️ Dati non trovati. Assicurati di aver eseguito i blocchi precedenti per caricare il CSV nell'oggetto 'res'.")
-
-if 'res' in locals() and res.risultati_per_tabella:
-
-    dati_estratti_all = []
-
-    for riga in res.risultati_per_tabella:
-        for alt in riga["alternative"]:
-
-            ent = calcola_entropia_binaria(alt.get("p_true_raw", 0.0), alt.get("p_false_raw", 0.0))
-
-            risp_alt = alt.get("risposta_pulita", "").strip().lower()
-            risp_reale = riga["reale"].strip().lower()
-            esito = (risp_alt == risp_reale)
-
-            dati_estratti_all.append({"entropia": ent, "corretto": esito})
-
-    entropie_all = [d["entropia"] for d in dati_estratti_all]
-
-    limiti_quartili = np.percentile(entropie_all, [0, 25, 50, 75, 100])
-
-    etichette_bins = [f"Q{i+1}\n({limiti_quartili[i]:.4f} - {limiti_quartili[i+1]:.4f})" for i in range(4)]
-
-    corrette_per_bin = [0] * 4
-    totali_per_bin = [0] * 4
-
-    for dato in dati_estratti_all:
-        ent = dato["entropia"]
-
-        indice_bin = np.digitize(ent, limiti_quartili) - 1
-
-        indice_bin = min(max(indice_bin, 0), 3)
-
-        totali_per_bin[indice_bin] += 1
-        if dato["corretto"]:
-            corrette_per_bin[indice_bin] += 1
-
-    accuratezze = []
-    for c, t in zip(corrette_per_bin, totali_per_bin):
-        if t > 0:
-            accuratezze.append((c / t) * 100)
-        else:
-            accuratezze.append(0.0)
-
-    fig, ax = plt.subplots(figsize=(9, 5), dpi=100)
-
-    barre = ax.bar(etichette_bins, accuratezze, color='#2196F3', alpha=0.8, edgecolor='#1565C0', linewidth=1.5)
-
-    for bar, t in zip(barre, totali_per_bin):
-        altezza = bar.get_height()
-        ax.annotate(f'{altezza:.2f}%\n(n={t})',
-                    xy=(bar.get_x() + bar.get_width() / 2, altezza),
-                    xytext=(0, 3), textcoords="offset points",
-                    ha='center', va='bottom', fontweight='bold', fontsize=9)
-
-    ax.set_title("Accuratezza per Quartili di Entropia (Originale + Tutte le Varianti)", pad=15)
-    ax.set_xlabel("Quartili (Q1 = Più Sicuro  ⟶  Q4 = Più Indeciso)")
-    ax.set_ylabel("Accuratezza (%)")
-    ax.set_ylim(0, 115)
-    ax.grid(axis='y', linestyle='--', alpha=0.7)
-
-    plt.show()
-
-else:
-    print("⚠️ Dati non trovati. Assicurati di aver eseguito i blocchi precedenti per caricare il CSV nell'oggetto 'res'.")
-
-"""# DISTRIBUZIONI TERNARIE SU ORIGINALI
-
-[15]
-"""
-
-entropie_corrette_ter = []
-entropie_errate_ter = []
-vettore_correttezza = []  # 0 se corretta, 1 se sbagliata
-vettore_entropia = []     # Valore dell'entropia corrispondente
-
-num_bins = 5
-limiti_bins = np.linspace(0, 1, num_bins + 1)
-etichette_bins = [f"{limiti_bins[i]:.4f} - {limiti_bins[i+1]:.4f}" for i in range(num_bins)]
-corrette_per_bin = [0] * num_bins
-totali_per_bin = [0] * num_bins
-
-
-if 'res' in locals() and res.risultati_per_tabella:
-
-    for riga in res.risultati_per_tabella:
-        alt_orig = riga["alternative"][0]
-
-        p_t = alt_orig.get("p_true_raw", 0.0)
-        p_f = alt_orig.get("p_false_raw", 0.0)
-        p_o = alt_orig.get("p_altri_raw",0.0)
-
-        ent_norm = calcola_entropia_ternaria(p_t, p_f, p_o)
-
-        risp_orig = alt_orig["risposta_pulita"].strip().lower()
-        risp_reale = riga["reale"].strip().lower()
-        esito = (risp_orig == risp_reale)
-
-        vettore_entropia.append(ent_norm)
-        if esito:
-            entropie_corrette_ter.append(ent_norm)
-            vettore_correttezza.append(0)
-        else:
-            entropie_errate_ter.append(ent_norm)
-            vettore_correttezza.append(1)
-
-        indice_bin = min(int(ent_norm * num_bins), num_bins - 1)
-        totali_per_bin[indice_bin] += 1
-        if esito:
-            corrette_per_bin[indice_bin] += 1
-
-    fig1, ax1 = plt.subplots(figsize=(8, 6), dpi=100)
-
-    data_to_plot = [entropie_corrette_ter, entropie_errate_ter]
-
-    bp = ax1.boxplot(data_to_plot, positions=[1, 2], widths=0.4, patch_artist=True, showfliers=False, zorder=1)
-
-    box_colors = ['#FFFFFF', '#FFFFFF']
-    box_edges = ['#4CAF50', '#F44336']
-
-    for patch, color, edge in zip(bp['boxes'], box_colors, box_edges):
-        patch.set_facecolor(color)
-        patch.set_edgecolor(edge)
-        patch.set_linewidth(1.5)
-
-    for median in bp['medians']:
-        median.set(color='black', linewidth=2)
-
-    jitter_c = np.random.normal(1, 0.05, size=len(entropie_corrette_ter))
-    jitter_e = np.random.normal(2, 0.05, size=len(entropie_errate_ter))
-
-    ax1.scatter(jitter_c, entropie_corrette_ter, alpha=0.6, color='#4CAF50',
-                edgecolors='white', linewidth=0.5, label=f'Esatte ({len(entropie_corrette_ter)})', zorder=2)
-    ax1.scatter(jitter_e, entropie_errate_ter, alpha=0.6, color='#F44336',
-                edgecolors='white', linewidth=0.5, label=f'Sbagliate ({len(entropie_errate_ter)})', zorder=2)
-
-    ax1.set_xticks([1, 2])
-    ax1.set_xticklabels(['Risposte Esatte', 'Risposte Sbagliate'], fontsize=11, fontweight='bold')
-    ax1.set_title("Scatterplot e Boxplot: Entropia TERNARIA (Domanda Orig.) vs Accuratezza", pad=15)
-    ax1.set_ylabel("Entropia Ternaria Normalizzata [0.0 = Sicuro, 1.0 = Indeciso]")
-    ax1.set_ylim(-0.05, 1.05)
-    ax1.legend(loc='upper center', bbox_to_anchor=(0.5, -0.1), ncol=2)
-    ax1.grid(axis='y', linestyle='--', alpha=0.7, zorder=0)
-
-    pearson_result = stats.pearsonr(vettore_entropia, vettore_correttezza)
-    print(f"Coefficiente di correlazione di Pearson: {pearson_result.statistic}")
-
-    plt.show()
-
-else:
-    print("⚠️ Dati non trovati. Assicurati di aver eseguito i blocchi precedenti per caricare il CSV nell'oggetto 'res'.")
-
-if 'res' in locals() and res.risultati_per_tabella:
-
-    dati_estratti_ter = []
-
-    for riga in res.risultati_per_tabella:
-        # Estraiamo SOLO la domanda originale (indice 0)
-        alt_orig = riga["alternative"][0]
-
-        p_t = alt_orig.get("p_true_raw", 0.0)
-        p_f = alt_orig.get("p_false_raw", 0.0)
-        p_o = alt_orig.get("p_altri_raw", 0.0)
-
-        # Usiamo la vecchia funzione di Shannon base 3 (limite 1.0)
-        ent_norm = calcola_entropia_ternaria(p_t, p_f, p_o)
-
-        risp_orig = alt_orig["risposta_pulita"].strip().lower()
-        risp_reale = riga["reale"].strip().lower()
-        esito = (risp_orig == risp_reale)
-
-        dati_estratti_ter.append({"entropia": ent_norm, "corretto": esito})
-
-    entropie_ter = [d["entropia"] for d in dati_estratti_ter]
-
-    limiti_quartili = np.percentile(entropie_ter, [0, 25, 50, 75, 100])
-
-    etichette_bins = [f"Q{i+1}\n({limiti_quartili[i]:.4f} - {limiti_quartili[i+1]:.4f})" for i in range(4)]
-
-    corrette_per_q = [0] * 4
-    totali_per_q = [0] * 4
-
-    for dato in dati_estratti_ter:
-        ent = dato["entropia"]
-
-        indice_q = np.digitize(ent, limiti_quartili) - 1
-        indice_q = min(max(indice_q, 0), 3)
-
-        totali_per_q[indice_q] += 1
-        if dato["corretto"]:
-            corrette_per_q[indice_q] += 1
-
-    accuratezze = [(c / t * 100) if t > 0 else 0 for c, t in zip(corrette_per_q, totali_per_q)]
-
-    fig, ax = plt.subplots(figsize=(9, 5), dpi=100)
-
-    barre = ax.bar(etichette_bins, accuratezze, color='#FF9800', alpha=0.8, edgecolor='#E65100', linewidth=1.5)
-
-    for bar, t in zip(barre, totali_per_q):
-        altezza = bar.get_height()
-        ax.annotate(f'{altezza:.2f}%\n(n={t})',
-                    xy=(bar.get_x() + bar.get_width() / 2, altezza),
-                    xytext=(0, 3), textcoords="offset points",
-                    ha='center', va='bottom', fontweight='bold', fontsize=9)
-
-    ax.set_title("Accuratezza per Quartili di Entropia TERNARIA (Solo Domanda Orig.)", pad=15)
-    ax.set_xlabel("Quartili (Q1 = Più Sicuro  ⟶  Q4 = Più Indeciso)")
-    ax.set_ylabel("Accuratezza (%)")
-    ax.set_ylim(0, 115)
-    ax.grid(axis='y', linestyle='--', alpha=0.7)
-
-    plt.show()
-
-else:
-    print("⚠️ Dati non trovati. Assicurati di aver eseguito i blocchi precedenti per caricare il CSV nell'oggetto 'res'.")
-
-"""#DISTRIBUZIONI TERNARIE SU DOMANDE MAGGIORANZA
-
-"""
-
-entropie_corrette_avg_ter = []
-entropie_errate_avg_ter = []
-vettore_correttezza_ter = []  # 0 se corretta, 1 se sbagliata
-vettore_entropia_ter = []     # Valore dell'entropia corrispondente
-
-num_bins = 5
-limiti_bins = np.linspace(0, 1, num_bins + 1)
-etichette_bins = [f"{limiti_bins[i]:.4f} - {limiti_bins[i+1]:.4f}" for i in range(num_bins)]
-corrette_per_bin = [0] * num_bins
-totali_per_bin = [0] * num_bins
-
-if 'res' in locals() and res.risultati_per_tabella:
-
-    for riga in res.risultati_per_tabella:
-        somma_norm_t = 0.0
-        somma_norm_f = 0.0
-        somma_norm_o = 0.0
-        k_valide = 0
-
-        # Estrazione e normalizzazione su 3 classi
-        for alt in riga["alternative"]:
-            p_t = alt.get("p_true_raw", 0.0)
-            p_f = alt.get("p_false_raw", 0.0)
-            p_o = alt.get("p_altri_raw", 0.0)
-
-            somma_raw = p_t + p_f + p_o
-            if somma_raw > 0:
-                somma_norm_t += p_t / somma_raw
-                somma_norm_f += p_f / somma_raw
-                somma_norm_o += p_o / somma_raw
-                k_valide += 1
-
-        if k_valide > 0:
-            # Distribuzione media sulle N varianti
-            media_t = somma_norm_t / k_valide
-            media_f = somma_norm_f / k_valide
-            media_o = somma_norm_o / k_valide
-
-            # Entropia della media (Ternaria base 3 -> Max 1.0)
-            ent_media = calcola_entropia_ternaria(media_t, media_f, media_o)
-
-            # Trova la risposta di maggioranza tra le 3 opzioni
-            if media_t >= media_f and media_t >= media_o:
-                risp_predetta = "true"
-            elif media_f > media_t and media_f >= media_o:
-                risp_predetta = "false"
-            else:
-                risp_predetta = "altro"
-
-            risp_reale = riga["reale"].strip().lower()
-            esito_corretto = (risp_predetta == risp_reale)
-
-            vettore_entropia_ter.append(ent_media)
-
-            if esito_corretto:
-                entropie_corrette_avg_ter.append(ent_media)
-                vettore_correttezza_ter.append(0)
-            else:
-                entropie_errate_avg_ter.append(ent_media)
-                vettore_correttezza_ter.append(1)
-
-            indice_bin = min(int(ent_media * num_bins), num_bins - 1)
-            totali_per_bin[indice_bin] += 1
-            if esito_corretto:
-                corrette_per_bin[indice_bin] += 1
-
-    fig1, ax1 = plt.subplots(figsize=(8, 6), dpi=100)
-
-    data_to_plot = [entropie_corrette_avg_ter, entropie_errate_avg_ter]
-
-    bp = ax1.boxplot(data_to_plot, positions=[1, 2], widths=0.4, patch_artist=True, showfliers=False, zorder=1)
-
-    box_colors = ['#FFFFFF', '#FFFFFF']
-    box_edges = ['#4CAF50', '#F44336']
-
-    for patch, color, edge in zip(bp['boxes'], box_colors, box_edges):
-        patch.set_facecolor(color)
-        patch.set_edgecolor(edge)
-        patch.set_linewidth(1.5)
-
-    for median in bp['medians']:
-        median.set(color='black', linewidth=2)
-
-    jitter_c = np.random.normal(1, 0.05, size=len(entropie_corrette_avg_ter))
-    jitter_e = np.random.normal(2, 0.05, size=len(entropie_errate_avg_ter))
-
-    ax1.scatter(jitter_c, entropie_corrette_avg_ter, alpha=0.6, color='#4CAF50',
-                edgecolors='white', linewidth=0.5, label=f'Esatte ({len(entropie_corrette_avg_ter)})', zorder=2)
-
-    ax1.scatter(jitter_e, entropie_errate_avg_ter, alpha=0.6, color='#F44336',
-                edgecolors='white', linewidth=0.5, label=f'Sbagliate ({len(entropie_errate_avg_ter)})', zorder=2)
-
-    ax1.set_xticks([1, 2])
-    ax1.set_xticklabels(['Risposte Esatte', 'Risposte Sbagliate'], fontsize=11, fontweight='bold')
-
-    ax1.set_title("Scatterplot e Boxplot: Entropia TERNARIA (Risposta di Maggioranza) vs Accuratezza", pad=15)
-    ax1.set_ylabel("Entropia Ternaria Normalizzata [0.0 = Sicuro, 1.0 = Indeciso]")
-
-    ax1.set_ylim(-0.05, 1.05)
-    ax1.legend(loc='upper center', bbox_to_anchor=(0.5, -0.1), ncol=2)
-    ax1.grid(axis='y', linestyle='--', alpha=0.7, zorder=0)
-
-    if len(vettore_entropia_ter) > 1:
-        pearson_result = stats.pearsonr(vettore_entropia_ter, vettore_correttezza_ter)
-        print(f"Coefficiente di correlazione di Pearson: {pearson_result.statistic}")
-
-    plt.show()
-
-else:
-    print("⚠️ Dati non trovati. Assicurati di aver eseguito i blocchi precedenti per caricare il CSV nell'oggetto 'res'.")
-
-if 'res' in locals() and res.risultati_per_tabella:
-    dati_estratti_avg_ter = []
-
-    for riga in res.risultati_per_tabella:
-        somma_norm_t = 0.0
-        somma_norm_f = 0.0
-        somma_norm_o = 0.0
-        k_valide = 0
-
-        # Sommiamo e normalizziamo le probabilità di TUTTE le varianti
-        for alt in riga["alternative"]:
-            p_t = alt.get("p_true_raw", 0.0)
-            p_f = alt.get("p_false_raw", 0.0)
-            p_o = alt.get("p_altri_raw", 0.0)
-
-            somma_raw = p_t + p_f + p_o
-            if somma_raw > 0:
-                somma_norm_t += p_t / somma_raw
-                somma_norm_f += p_f / somma_raw
-                somma_norm_o += p_o / somma_raw
-                k_valide += 1
-
-        if k_valide > 0:
-            # Calcolo delle probabilità medie (Ensemble)
-            media_t = somma_norm_t / k_valide
-            media_f = somma_norm_f / k_valide
-            media_o = somma_norm_o / k_valide
-
-            # Entropia della media usando la funzione ternaria in base 3
-            ent_media = calcola_entropia_ternaria(media_t, media_f, media_o)
-
-            # Determiniamo la risposta predetta dalla maggioranza
-            if media_t >= media_f and media_t >= media_o:
-                risp_predetta = "true"
-            elif media_f > media_t and media_f >= media_o:
-                risp_predetta = "false"
-            else:
-                risp_predetta = "altro"
-
-            risp_reale = riga["reale"].strip().lower()
-            esito_corretto = (risp_predetta == risp_reale)
-
-            dati_estratti_avg_ter.append({"entropia": ent_media, "corretto": esito_corretto})
-
-    entropie_avg_ter = [d["entropia"] for d in dati_estratti_avg_ter]
-
-    limiti_quartili = np.percentile(entropie_avg_ter, [0, 25, 50, 75, 100])
-
-    corrette_per_q = [0] * 4
-    totali_per_q = [0] * 4
-
-    for dato in dati_estratti_avg_ter:
-        ent = dato["entropia"]
-
-        indice_q = np.digitize(ent, limiti_quartili) - 1
-        indice_q = min(max(indice_q, 0), 3)
-
-        totali_per_q[indice_q] += 1
-        if dato["corretto"]:
-            corrette_per_q[indice_q] += 1
-
-    accuratezze = [(c / t * 100) if t > 0 else 0 for c, t in zip(corrette_per_q, totali_per_q)]
-
-    fig, ax = plt.subplots(figsize=(8, 5), dpi=100)
-
-    etichette_q = [f"Q{i+1}\n({limiti_quartili[i]:.4f} - {limiti_quartili[i+1]:.4f})" for i in range(4)]
-
-    barre = ax.bar(etichette_q, accuratezze, color='#FF9800', alpha=0.85,
-                   edgecolor='#E65100', linewidth=1.2, width=0.6)
-
-    for bar, acc, n in zip(barre, accuratezze, totali_per_q):
-        ax.annotate(f'{acc:.1f}%\n(n={n})',
-                    xy=(bar.get_x() + bar.get_width() / 2, acc),
-                    xytext=(0, 5), textcoords="offset points",
-                    ha='center', va='bottom', fontweight='bold', fontsize=11)
-
-    ax.set_title("Accuratezza per Quartili di Entropia TERNARIA (Risposta di Maggioranza)", pad=15)
-    ax.set_ylabel("Accuratezza (%)")
-    ax.set_ylim(0, 115)
-    ax.grid(axis='y', linestyle='--', alpha=0.7)
-    ax.legend()
-    plt.show()
-
-else:
-    print("⚠️ Dati non trovati. Assicurati di aver eseguito i blocchi precedenti per caricare il CSV nell'oggetto 'res'.")
-
-"""#DISTRIBUZIONI TERNARIE TUTTE LE DOMANDE
-
-"""
-
-entropie_corrette_all_ter = []
-entropie_errate_all_ter = []
-vettore_correttezza_all_ter = []  # 0 se corretta, 1 se sbagliata
-vettore_entropia_all_ter = []     # Valore dell'entropia corrispondente
-
-if 'res' in locals() and res.risultati_per_tabella:
-
-    for riga in res.risultati_per_tabella:
-        # ITERIAMO SU TUTTE LE VARIANTI (Originale + Perturbate)
-        for alt in riga["alternative"]:
-
-            # Calcolo Entropia Ternaria per la singola variante
-            p_t = alt.get("p_true_raw", 0.0)
-            p_f = alt.get("p_false_raw", 0.0)
-            p_o = alt.get("p_altri_raw", 0.0)
-
-            # Usiamo la funzione ternaria (assumiamo base 3 normalizzata a 1.0)
-            ent = calcola_entropia_ternaria(p_t, p_f, p_o)
-
-            # Verifichiamo se QUESTA SPECIFICA VARIANTE era corretta o sbagliata
-            risp_alt = alt.get("risposta_pulita", "").strip().lower()
-            risp_reale = riga["reale"].strip().lower()
-
-            vettore_entropia_all_ter.append(ent)
-
-            if risp_alt == risp_reale:
-                entropie_corrette_all_ter.append(ent)
-                vettore_correttezza_all_ter.append(0)
-            else:
-                entropie_errate_all_ter.append(ent)
-                vettore_correttezza_all_ter.append(1)
-
-    fig, ax = plt.subplots(figsize=(8, 6), dpi=100)
-
-    data_to_plot = [entropie_corrette_all_ter, entropie_errate_all_ter]
-
-    bp = ax.boxplot(data_to_plot, positions=[1, 2], widths=0.4, patch_artist=True, showfliers=False, zorder=1)
-
-    box_colors = ['#FFFFFF', '#FFFFFF']
-    box_edges = ['#4CAF50', '#F44336']
-
-    for patch, color, edge in zip(bp['boxes'], box_colors, box_edges):
-        patch.set_facecolor(color)
-        patch.set_edgecolor(edge)
-        patch.set_linewidth(1.5)
-
-    for median in bp['medians']:
-        median.set(color='black', linewidth=2)
-
-    jitter_corrette = np.random.normal(1, 0.05, size=len(entropie_corrette_all_ter))
-    jitter_errate = np.random.normal(2, 0.05, size=len(entropie_errate_all_ter))
-
-    ax.scatter(jitter_corrette, entropie_corrette_all_ter, alpha=0.5, color='#4CAF50',
-               edgecolors='white', linewidth=0.5, label=f'Esatte ({len(entropie_corrette_all_ter)})', zorder=2)
-
-    ax.scatter(jitter_errate, entropie_errate_all_ter, alpha=0.5, color='#F44336',
-               edgecolors='white', linewidth=0.5, label=f'Sbagliate ({len(entropie_errate_all_ter)})', zorder=2)
-
-    ax.set_xticks([1, 2])
-    ax.set_xticklabels(['Risposte Esatte', 'Risposte Sbagliate'], fontsize=11, fontweight='bold')
-    ax.set_title("Distribuzione Entropia TERNARIA (Originale + Varianti) vs Accuratezza", pad=15)
-    ax.set_ylabel("Entropia Ternaria Normalizzata [0.0 = Sicuro, 1.0 = Indeciso]")
-    ax.set_ylim(-0.05, 1.05)
-    ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.1), ncol=2)
-    ax.grid(axis='y', linestyle='--', alpha=0.7, zorder=0)
-
-    # Calcolo Pearson
-    if len(vettore_entropia_all_ter) > 1:
-        pearson_result = stats.pearsonr(vettore_entropia_all_ter, vettore_correttezza_all_ter)
-        print(f"Coefficiente di correlazione di Pearson: {pearson_result.statistic}")
-
-    plt.show()
-
-else:
-    print("⚠️ Dati non trovati. Assicurati di aver eseguito i blocchi precedenti per caricare il CSV nell'oggetto 'res'.")
-
-if 'res' in locals() and res.risultati_per_tabella:
-    dati_estratti_all_ter = []
-
-    for riga in res.risultati_per_tabella:
-        # ITERIAMO SU TUTTE LE VARIANTI (Originale + Perturbate)
-        for alt in riga["alternative"]:
-
-            # Estrazione probabilità per le 3 classi
-            p_t = alt.get("p_true_raw", 0.0)
-            p_f = alt.get("p_false_raw", 0.0)
-            p_o = alt.get("p_altri_raw", 0.0)
-
-            # Calcolo Entropia Ternaria per la singola variante
-            ent = calcola_entropia_ternaria(p_t, p_f, p_o)
-
-            # Verifichiamo se la risposta era corretta
-            risp_alt = alt.get("risposta_pulita", "").strip().lower()
-            risp_reale = riga["reale"].strip().lower()
-            esito = (risp_alt == risp_reale)
-
-            dati_estratti_all_ter.append({"entropia": ent, "corretto": esito})
-
-    entropie_all_ter = [d["entropia"] for d in dati_estratti_all_ter]
-
-    limiti_quartili = np.percentile(entropie_all_ter, [0, 25, 50, 75, 100])
-
-    etichette_bins = [f"Q{i+1}\n({limiti_quartili[i]:.4f} - {limiti_quartili[i+1]:.4f})" for i in range(4)]
-
-    corrette_per_bin = [0] * 4
-    totali_per_bin = [0] * 4
-
-    for dato in dati_estratti_all_ter:
-        ent = dato["entropia"]
-
-        indice_bin = np.digitize(ent, limiti_quartili) - 1
-
-        indice_bin = min(max(indice_bin, 0), 3)
-
-        totali_per_bin[indice_bin] += 1
-        if dato["corretto"]:
-            corrette_per_bin[indice_bin] += 1
-
-    accuratezze = []
-    for c, t in zip(corrette_per_bin, totali_per_bin):
-        if t > 0:
-            accuratezze.append((c / t) * 100)
-        else:
-            accuratezze.append(0.0)
-
-    fig, ax = plt.subplots(figsize=(9, 5), dpi=100)
-
-    barre = ax.bar(etichette_bins, accuratezze, color='#FF9800', alpha=0.8, edgecolor='#E65100', linewidth=1.5)
-
-    for bar, t in zip(barre, totali_per_bin):
-        altezza = bar.get_height()
-        ax.annotate(f'{altezza:.2f}%\n(n={t})',
-                    xy=(bar.get_x() + bar.get_width() / 2, altezza),
-                    xytext=(0, 3), textcoords="offset points",
-                    ha='center', va='bottom', fontweight='bold', fontsize=9)
-
-    ax.set_title("Accuratezza per Quartili di Entropia TERNARIA (Originale + Tutte le Varianti)", pad=15)
-    ax.set_xlabel("Quartili (Q1 = Più Sicuro  ⟶  Q4 = Più Indeciso)")
-    ax.set_ylabel("Accuratezza (%)")
-    ax.set_ylim(0, 115)
-    ax.grid(axis='y', linestyle='--', alpha=0.7)
-
-    plt.show()
-
-else:
-    print("⚠️ Dati non trovati. Assicurati di aver eseguito i blocchi precedenti per caricare il CSV nell'oggetto 'res'.")
-
-"""# DELTA ENTROPIA BINARIO E TERNARIA
-
-"""
-
-if 'res' in locals() and res.risultati_per_tabella:
-    # Caso Binario
-    delta_bin_corrette = []
-    delta_bin_errate = []
-    vett_delta_bin = []
-
-    # Caso Ternario
-    delta_ter_corrette = []
-    delta_ter_errate = []
-    vett_delta_ter = []
-
-    vett_correttezza = [] # 0 se corretta, 1 se sbagliata
-
-    for riga in res.risultati_per_tabella:
-        entropie_bin_domanda = []
-        entropie_ter_domanda = []
-
-        # Estraiamo le 5 ripetizioni per questa specifica domanda
-        for alt in riga["alternative"]:
-            p_t = alt.get("p_true_raw", 0.0)
-            p_f = alt.get("p_false_raw", 0.0)
-            p_a = alt.get("p_altri_raw", 0.0)
-
-            entropie_bin_domanda.append(calcola_entropia_binaria(p_t, p_f))
-
-            entropie_ter_domanda.append(calcola_entropia_ternaria(p_t, p_f, p_a))
-
-        # Calcolo il DELTA (Max - Min) tra le 5 ripetizioni
-        delta_bin = np.max(entropie_bin_domanda) - np.min(entropie_bin_domanda)
-        delta_ter = np.max(entropie_ter_domanda) - np.min(entropie_ter_domanda)
-
-        is_corretta = riga.get("corretta", False)
-
-        # Salvataggio nelle liste Binario
-        vett_delta_bin.append(delta_bin)
-        if is_corretta:
-            delta_bin_corrette.append(delta_bin)
-        else:
-            delta_bin_errate.append(delta_bin)
-
-        # Salvataggio nelle liste Ternario
-        vett_delta_ter.append(delta_ter)
-        if is_corretta:
-            delta_ter_corrette.append(delta_ter)
-        else:
-            delta_ter_errate.append(delta_ter)
-
-        vett_correttezza.append(0 if is_corretta else 1)
-
-
-    def plot_delta_entropia(corrette, errate, vettore_delta, vettore_corr, titolo, max_y):
-        fig, ax = plt.subplots(figsize=(8, 6), dpi=100)
-
-        data_to_plot = [corrette, errate]
-
-        bp = ax.boxplot(data_to_plot, positions=[1, 2], widths=0.4, patch_artist=True, showfliers=False, zorder=1)
-
-        box_colors = ['#FFFFFF', '#FFFFFF']
-        box_edges = ['#4CAF50', '#F44336']
-
-        for patch, color, edge in zip(bp['boxes'], box_colors, box_edges):
-            patch.set_facecolor(color)
-            patch.set_edgecolor(edge)
-            patch.set_linewidth(1.5)
-
-        for median in bp['medians']:
-            median.set(color='black', linewidth=2)
-
-        jitter_corrette = np.random.normal(1, 0.05, size=len(corrette))
-        jitter_errate = np.random.normal(2, 0.05, size=len(errate))
-
-        ax.scatter(jitter_corrette, corrette, alpha=0.5, color='#4CAF50',
-                   edgecolors='white', linewidth=0.5, label=f'Esatte ({len(corrette)})', zorder=2)
-
-        ax.scatter(jitter_errate, errate, alpha=0.5, color='#F44336',
-                   edgecolors='white', linewidth=0.5, label=f'Sbagliate ({len(errate)})', zorder=2)
-
-        ax.set_xticks([1, 2])
-        ax.set_xticklabels(['Risposte Esatte', 'Risposte Sbagliate'], fontsize=11, fontweight='bold')
-        ax.set_title(titolo, pad=15)
-        ax.set_ylabel("Delta Entropia (Max - Min) [0 = Stabile, >0 = Instabile]")
-
-        ax.set_ylim(-0.05, 1.05)
-        ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.1), ncol=2)
-        ax.grid(axis='y', linestyle='--', alpha=0.7, zorder=0)
-
-        if len(vettore_delta) > 1:
-            pearson_result = stats.pearsonr(vettore_delta, vettore_corr)
-            print(f"Coefficiente di correlazione di Pearson: {pearson_result.statistic}\n")
-
-        plt.show()
-
-
-    plot_delta_entropia(
-        delta_bin_corrette, delta_bin_errate, vett_delta_bin, vett_correttezza,
-        "Delta Entropia (Caso BINARIO)", max_y=1.0)
-
-    print("\n")
-    plot_delta_entropia(
-        delta_ter_corrette, delta_ter_errate, vett_delta_ter, vett_correttezza,
-        "Delta Entropia (Caso TERNARIO)", max_y=1.6)
-
-else:
-    print("⚠️ Dati non trovati.")
-
-"""# LOG-PROB MASSA FUORI-TASK - DOMANDE CORRETTE vs ERRATE
-Per ogni domanda calcoliamo, su ciascuna delle 5 ripetizioni,
-la frazione di massa di probabilità che NON è una risposta valida
-True/False. Questo include sia gli altri token nei top-K
-sia la massa NON catturata dai top-K (per costruzione fuori task):
-    p_fuori_task = 1 - p_true_raw - p_false_raw
-NB: NON dividiamo per (p_true + p_false + p_altri). Quel denominatore
-parziale rinormalizzerebbe via la massa mancante, spalmandola su
-true/false e sottostimando il fuori-task. Il denominatore corretto
-è l'unità (la distribuzione completa somma a 1).
-Visualizzazione in LOG-PROB invece delle percentuali: la massa
-fuori-task è tipicamente piccola (ordini di grandezza 1e-3..1e-1)
-e anche con la scala logaritmica sull'asse risulta poco leggibile.
-Plottando direttamente ln(p) su asse LINEARE i valori si distribuiscono
-in modo più uniforme e interpretabile. Floor a 1e-4 (ln ≈ -9.21) per
-rendere definito il log dei valori (quasi) nulli.
-Poi facciamo la MEDIA sulle 5 ripetizioni e confrontiamo la
-distribuzione tra domande con risposta corretta ed errata.
-"""
-if 'res' in locals() and res.risultati_per_tabella:
-    pother_corrette = []
-    pother_errate = []
-    vett_pother = []
-    vett_correttezza = []  # 0 se corretta, 1 se sbagliata
-
-    EPS = 1e-4  # floor: sotto questa soglia la massa fuori-task è trattata come trascurabile
-
-    for riga in res.risultati_per_tabella:
-        valori_pother_dom = []
-        for alt in riga["alternative"]:
-            p_t = alt.get("p_true_raw", 0.0)
-            p_f = alt.get("p_false_raw", 0.0)
-            p_o = alt.get("p_altri_raw", 0.0)
-            somma = p_t + p_f + p_o
-            if somma > 0:  # ripetizione con dati validi
-                # tutto ciò che non è true/false è fuori task
-                # (other esplicito + massa fuori dai top-K)
-                p_fuori_task = 1.0 - p_t - p_f
-                # floor positivo invece di clamp a 0: necessario per la scala log
-                p_fuori_task = min(1.0, max(EPS, p_fuori_task))
-                valori_pother_dom.append(p_fuori_task)
-        if not valori_pother_dom:
+        ents = [entropia(alt.get("probabilita", {}), res.classi, includi_altro)
+                for alt in riga["alternative"]]
+        if not ents:
             continue
-        # Media sulle 5 ripetizioni, poi log-prob della massa fuori-task.
-        # Lavorare in log (ln) "stira" i valori molto piccoli e rende leggibile
-        # una distribuzione altrimenti schiacciata vicino allo 0; il floor a EPS
-        # garantisce che l'argomento del log resti > 0.
-        pother_medio = float(np.mean(valori_pother_dom))
-        logp_medio = float(np.log(pother_medio))
-        is_corretta = riga.get("corretta", False)
-        vett_pother.append(logp_medio)
-        vett_correttezza.append(0 if is_corretta else 1)
-        if is_corretta:
-            pother_corrette.append(logp_medio)
-        else:
-            pother_errate.append(logp_medio)
+        maxent.append(max(ents))
+        delta.append(max(ents) - min(ents))
+        esiti_row.append(riga["corretta"])
+    plot_corrette_errate(
+        maxent, esiti_row,
+        f"Entropia massima tra le ripetizioni ({tag}) vs Accuratezza",
+        f"MaxEnt [0=Sicuro, 1=Indeciso] ({tag})")
+    plot_corrette_errate(
+        delta, esiti_row,
+        f"Delta entropia (Max - Min, {tag}) vs Accuratezza",
+        f"Delta entropia [0=Stabile, >0=Instabile] ({tag})")
 
-    fig, ax = plt.subplots(figsize=(8, 6), dpi=100)
-    data_to_plot = [pother_corrette, pother_errate]
-    bp = ax.boxplot(data_to_plot, positions=[1, 2], widths=0.4, patch_artist=True, showfliers=False, zorder=1)
-    box_colors = ['#FFFFFF', '#FFFFFF']
-    box_edges = ['#4CAF50', '#F44336']
-    for patch, color, edge in zip(bp['boxes'], box_colors, box_edges):
-        patch.set_facecolor(color)
-        patch.set_edgecolor(edge)
-        patch.set_linewidth(1.5)
-    for median in bp['medians']:
-        median.set(color='black', linewidth=2)
+"""[11] Log-prob della massa FUORI-TASK (media sulle ripetizioni) vs accuratezza
 
-    jitter_c = np.random.normal(1, 0.05, size=len(pother_corrette))
-    jitter_e = np.random.normal(2, 0.05, size=len(pother_errate))
-    ax.scatter(jitter_c, pother_corrette, alpha=0.5, color='#4CAF50',
-               edgecolors='white', linewidth=0.5,
-               label=f'Esatte ({len(pother_corrette)})', zorder=2)
-    ax.scatter(jitter_e, pother_errate, alpha=0.5, color='#F44336',
-               edgecolors='white', linewidth=0.5,
-               label=f'Sbagliate ({len(pother_errate)})', zorder=2)
+Per ogni domanda calcoliamo, su ciascuna ripetizione, la frazione di massa di
+probabilita' che NON e' una classe valida:
+    p_fuori_task = 1 - Σ p(classe valida)
+Questo include sia il bucket "altro" sia la massa non catturata dai top-K. NON
+rinormalizziamo: il denominatore corretto e' l'unita'. Si lavora in log-prob
+(ln) su asse lineare con floor a 1e-4, poi si media sulle ripetizioni.
+"""
 
-    ax.set_xticks([1, 2])
-    ax.set_xticklabels(['Risposte Esatte', 'Risposte Sbagliate'], fontsize=11, fontweight='bold')
-    ax.set_title("Log-prob massa FUORI-TASK (media sulle 5 ripetizioni) vs Accuratezza", pad=15)
-    ax.set_ylabel("ln(1 - p_true - p_false)\n")
+EPS = 1e-4  # floor: sotto questa soglia la massa fuori-task e' trascurabile
+logp_fuori = []
+esiti_row = []
+for riga in res.risultati_per_tabella:
+    valori_riga = []
+    for alt in riga["alternative"]:
+        prob = alt.get("probabilita", {})
+        if sum(prob.values()) <= 0:
+            continue
+        p_valide = sum(prob.get(c, 0.0) for c in res.classi)
+        p_fuori = min(1.0, max(EPS, 1.0 - p_valide))
+        valori_riga.append(p_fuori)
+    if not valori_riga:
+        continue
+    logp_fuori.append(float(np.log(float(np.mean(valori_riga)))))
+    esiti_row.append(riga["corretta"])
 
-    # Asse Y lineare: i valori sono già log-prob, quindi non serve la scala log.
-    if vett_pother:
-        min_val = min(vett_pother)
-        max_val = max(vett_pother)
-        margine = 0.05 * (max_val - min_val) if max_val > min_val else 1.0
-        ax.set_ylim(min_val - margine, max_val + margine)
-
-    ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.1), ncol=2)
-    ax.grid(axis='y', linestyle='--', alpha=0.7, which='both', zorder=0)
-
-    # Correlazione di Pearson tra log-prob fuori-task ed errore (0=corretta, 1=errata)
-    if len(vett_pother) > 1:
-        pearson_result = stats.pearsonr(vett_pother, vett_correttezza)
-        print(f"Coefficiente di correlazione di Pearson (log-prob fuori-task media vs errore): "
-              f"{pearson_result.statistic:.4f} (p={pearson_result.pvalue:.2e})")
-        # Valore mostrato anche a schermo, direttamente sul grafico
-        testo_pearson = (f"Pearson r = {pearson_result.statistic:.4f}\n"
-                         f"p-value = {pearson_result.pvalue:.2e}")
-        ax.text(0.97, 0.97, testo_pearson, transform=ax.transAxes,
-                ha='right', va='top', fontsize=10,
-                bbox=dict(boxstyle='round', facecolor='#FFF8E1',
-                          edgecolor='#E65100', alpha=0.9))
-
-    plt.show()
+if logp_fuori:
+    plot_corrette_errate(
+        logp_fuori, esiti_row,
+        "Log-prob massa FUORI-TASK (media ripetizioni) vs Accuratezza",
+        "ln(1 - Σ p_classi_valide)",
+        ylim=None)
 else:
-    print("⚠️ Dati non trovati.")
+    print("⚠️ Nessun dato valido per il log-prob fuori-task.")
