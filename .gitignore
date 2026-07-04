@@ -21,6 +21,9 @@ CLAUDE.md
 # Hand-off di sessione (locale)
 HANDOFF.md
 
+# Setup esecuzione su cluster Thor (locale)
+cluster/
+
 grafici_output/
 
 # Python

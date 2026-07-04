@@ -1,7 +1,7 @@
 """Costanti di runtime del motore di benchmark (indipendenti dal dataset)."""
 
 # Quante domande del dataset processare
-NUM_TEST = 3
+NUM_TEST = 3000
 # Quante varianti (originale + perturbazioni) generare per ogni domanda
 RIPETIZIONI_PER_DOMANDA = 5
 # Tentativi massimi di perturbazione (parafrasi/shuffle) prima di accettare una
