@@ -228,8 +228,11 @@ def esegui_benchmark(spec: DatasetSpec, filename: str = OUTPUT_CSV,
         )
 
     # Con SEED fissato la run e' riproducibile: stesso sottoinsieme/ordine di
-    # domande e stesse permutazioni delle opzioni. Le risposte del modello
-    # restano comunque stocastiche (temperatura lato Ollama).
+    # domande e stesse permutazioni delle opzioni. Anche le risposte sono
+    # deterministiche (argmax sui logprobs del primo token, indipendente dalla
+    # temperatura): per i dataset senza parafrasi la run e' riproducibile
+    # end-to-end. Resta stocastica solo la generazione delle parafrasi (BoolQ),
+    # che usa il testo campionato a temperatura default (vedi ollama.parafrasa).
     random.seed(SEED)
 
     print(f"Scarico o carico il dataset '{spec.hf_id}' dalla cache...")

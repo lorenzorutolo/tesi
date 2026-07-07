@@ -1,6 +1,6 @@
-# ProgettoSemestre
+# Progetto di Tesi
 
-Progetto Semestre SUPSI 2025/26
+Tesi SUPSI 2025/26
 
 ---
 
@@ -61,10 +61,12 @@ Vite inoltra le chiamate `/api/*` al backend su `:8000` (proxy in `vite.config.j
 
 ## Dataset utilizzati
 
-| Dataset | ID HuggingFace | Domande totali | Split disponibili | Split usato |
-| ------- | -------------- | -------------- | ----------------- | ----------- |
-| BoolQ (true/false) | `google/boolq` | 12.697 | `train` (9.427), `validation` (3.270) | `validation` |
-| CommonsenseQA (multiple-choice, 5 opzioni) | `tau/commonsense_qa` | 12.102 | `train` (9.741), `validation` (1.221), `test` (1.140) | `validation` |
+| Dataset | ID HuggingFace | Domande totali | Split disponibili | Split usato | Distribuzione classi (split usato) |
+| ------- | -------------- | -------------- | ----------------- | ----------- | ---------------------------------- |
+| BoolQ (true/false) | `google/boolq` | 12.697 | `train` (9.427), `validation` (3.270) | `validation` | `true` 2.033 (62,2%), `false` 1.237 (37,8%) |
+| CommonsenseQA (multiple-choice, 5 opzioni) | `tau/commonsense_qa` | 12.102 | `train` (9.741), `validation` (1.221), `test` (1.140) | `validation` | `A` 239 (19,6%), `B` 255 (20,9%), `C` 241 (19,7%), `D` 251 (20,6%), `E` 235 (19,2%) |
+
+> La distribuzione delle classi si riferisce all'intero split `validation`. Per BoolQ il benchmark ne usa un sottoinsieme di 3.000 domande (vedi sotto), la cui distribuzione è pressoché identica: `true` 1.864 (62,1%), `false` 1.136 (37,9%). Nota lo sbilanciamento di BoolQ verso `true` (~62%) — un modello che rispondesse sempre `true` otterrebbe già quell'accuratezza — mentre CommonsenseQA è quasi uniforme sulle 5 lettere (~20% ciascuna), quindi ogni preferenza sistematica del modello per certe lettere è bias di posizione, non del dataset.
 
 **Perché lo split `validation`.** Per entrambi i dataset le etichette del test set non sono pubbliche: per CommonsenseQA lo split `test` esiste su HuggingFace ma ha `answerKey` vuoto, per BoolQ il test (~3.245 domande del paper originale) non è proprio incluso nella versione HF. Lo split `train` servirebbe al fine-tuning (che qui non facciamo) ed è anche il più esposto a contaminazione nei dati di pre-training dei modelli. `validation` è quindi l'unico split held-out con le risposte note, ed è la convenzione in letteratura per i risultati zero-shot: i numeri restano confrontabili con quelli pubblicati.
 
@@ -151,7 +153,7 @@ Nelle scartate il campo `convergente` **non va interpretato**: tutte le entry in
 Da queste colonne, `generatore_grafici.py` ricostruisce (in modo **dataset-agnostico**: le classi sono rilevate dalle chiavi di `probabilita`, escluso `altro`):
 
 - **Accuratezza globale** Originale / Varianti / Maggioranza → conteggio `risposta_pulita` vs `reale` (la maggioranza è l'`argmax` della somma delle probabilità per classe). Vale per qualsiasi numero di classi.
-- **Matrice di confusione 2×2 + precision/recall** → generate **solo per dataset binari** (`true`/`false`); per il multiple-choice si mostra solo l'accuratezza globale.
+- **Matrice di confusione** → per i dataset **binari** la classica 2×2 con TP/TN/FP/FN + precision/recall; per il **multiple-choice** una matrice K×(K+1) (riga = classe reale, colonna = classe predetta, ultima colonna `altro` per risposte non valide) come heatmap con diagonale evidenziata, ai tre livelli Originale/Varianti/Maggioranza. I marginali di colonna (stampati a terminale) misurano il **bias di posizione**: quante volte il modello risponde ciascuna lettera. Niente precision/recall per lettera: le lettere sono posizioni, non classi semantiche — la metrica di sintesi resta l'accuratezza.
 - **Entropia** (min / max / avg / delta + quartili, scatterplot, Pearson) → dai valori in `probabilita`, con la funzione unica `entropia(probs, classi, includi_altro)`:
   - *senza altro* = entropia sulle sole classi valide (base = K) → per BoolQ coincide con l'entropia **binaria**;
   - *con altro* = entropia su classi valide + `altro` (base = K+1) → per BoolQ coincide con l'entropia **ternaria**.

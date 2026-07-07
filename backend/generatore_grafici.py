@@ -312,6 +312,7 @@ def carica_da_csv(filename) -> RisultatiBenchmark:
                 "reale": reale,
                 "alternative": alternative,
                 "corretta": esito_corretto,
+                "risposta_maggioranza": risposta_maggioranza,
             })
     return risultati
 
@@ -378,6 +379,64 @@ def stampa_metriche(tp, tn, fp, fn, nome):
     # Di tutti i TRUE reali, quanti ne ha trovati il modello?
     print(f"Recall   : {recall:.4f}")
     print()
+
+
+def conta_confusione(righe, classi, livello):
+    """Matrice K x (K+1): riga = classe reale, colonna = predetta (+ 'altro').
+
+    ``livello`` in {originale, varianti, maggioranza}; l'ultima colonna raccoglie
+    le risposte che non sono una classe valida (vuote, testo non parsato, ...).
+    """
+    idx = {c: i for i, c in enumerate(classi)}
+    M = np.zeros((len(classi), len(classi) + 1), dtype=int)
+    for riga in righe:
+        r = idx.get(riga["reale"])
+        if r is None:
+            continue
+        if livello == "originale":
+            predette = [riga["alternative"][0]["risposta_pulita"].strip()]
+        elif livello == "varianti":
+            predette = [a["risposta_pulita"].strip() for a in riga["alternative"][1:]]
+        else:  # maggioranza
+            predette = [riga["risposta_maggioranza"]]
+        for p in predette:
+            M[r, idx.get(p, len(classi))] += 1
+    return M
+
+
+def stampa_matrice_kxk(M, classi, titolo):
+    """Heatmap della matrice di confusione K x (K+1) per dataset multi-classe.
+
+    La diagonale (bordo verde) sono le risposte corrette. I marginali di colonna
+    ("quante volte il modello ha risposto A/B/...") leggono il bias di posizione:
+    se la classe giusta e' distribuita ~uniformemente, colonne sbilanciate
+    indicano preferenza per certe lettere.
+    """
+    etichette_col = list(classi) + ["altro"]
+    fig, ax = plt.subplots(figsize=(7.5, 6), dpi=100)
+    im = ax.imshow(M, cmap='Blues')
+    ax.set_title(titolo, pad=15)
+    ax.set_xticks(range(len(etichette_col)))
+    ax.set_xticklabels([f"Modello: {c}" for c in etichette_col], rotation=30, ha='right')
+    ax.set_yticks(range(len(classi)))
+    ax.set_yticklabels([f"Reale: {c}" for c in classi])
+    soglia = M.max() / 2 if M.max() > 0 else 0
+    for i in range(M.shape[0]):
+        for j in range(M.shape[1]):
+            ax.text(j, i, str(M[i, j]), ha='center', va='center',
+                    fontweight='bold',
+                    color='white' if M[i, j] > soglia else '#37474F')
+        ax.add_patch(mpatches.Rectangle((i - 0.5, i - 0.5), 1, 1, fill=False,
+                                        edgecolor='#4CAF50', linewidth=2.5))
+    fig.colorbar(im, ax=ax, shrink=0.8)
+    plt.tight_layout()
+
+    totale = M.sum()
+    if totale > 0:
+        marginali = M.sum(axis=0) / totale * 100
+        print(f"  {titolo} — risposte del modello per classe (bias di posizione):")
+        print("    " + "  ".join(f"{c}: {m:.1f}%" for c, m in zip(etichette_col, marginali)))
+    plt.show()
 
 
 def _scatter_box(ax, corrette, errate):
@@ -520,8 +579,14 @@ if binario:
     stampa_metriche(res.tp_mod,  res.tn_mod,  res.fp_mod,  res.fn_mod,  "Varianti")
     stampa_metriche(res.tp,      res.tn,      res.fp,      res.fn,      "Maggioranza")
 else:
-    print("Dataset multi-classe: matrice 2x2 e precision/recall binarie omesse "
-          "(si veda l'accuratezza globale qui sopra).")
+    for livello, nome, acc in (("originale", "Originale", acc_orig),
+                               ("varianti", "Varianti", acc_mod),
+                               ("maggioranza", "Maggioranza", acc_magg)):
+        M = conta_confusione(res.risultati_per_tabella, res.classi, livello)
+        stampa_matrice_kxk(M, res.classi,
+                           f"Matrice {K}x{K} — {nome} ({acc:.1f}%)")
+    print("Multi-classe: precision/recall per lettera non riportate "
+          "(le lettere sono posizioni, non classi semantiche); la metrica di sintesi è l'accuracy.")
 
 """[9] Entropia vs accuratezza, per livello x (senza / con "altro")
 
