@@ -2,6 +2,10 @@
 
 # Quante domande del dataset processare
 NUM_TEST = 3000
+# Seed unico per la riproducibilita': fissa sia l'ordine di shuffle dello split
+# HuggingFace sia il modulo ``random`` (shuffle delle opzioni nelle varianti).
+# Vale per tutti i dataset. Mettere None per tornare a run non deterministiche.
+SEED = 42
 # Quante varianti (originale + perturbazioni) generare per ogni domanda
 RIPETIZIONI_PER_DOMANDA = 5
 # Tentativi massimi di perturbazione (parafrasi/shuffle) prima di accettare una

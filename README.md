@@ -59,6 +59,22 @@ Vite inoltra le chiamate `/api/*` al backend su `:8000` (proxy in `vite.config.j
 
 ---
 
+## Dataset utilizzati
+
+| Dataset | ID HuggingFace | Domande totali | Split disponibili | Split usato |
+| ------- | -------------- | -------------- | ----------------- | ----------- |
+| BoolQ (true/false) | `google/boolq` | 12.697 | `train` (9.427), `validation` (3.270) | `validation` |
+| CommonsenseQA (multiple-choice, 5 opzioni) | `tau/commonsense_qa` | 12.102 | `train` (9.741), `validation` (1.221), `test` (1.140) | `validation` |
+
+**Perché lo split `validation`.** Per entrambi i dataset le etichette del test set non sono pubbliche: per CommonsenseQA lo split `test` esiste su HuggingFace ma ha `answerKey` vuoto, per BoolQ il test (~3.245 domande del paper originale) non è proprio incluso nella versione HF. Lo split `train` servirebbe al fine-tuning (che qui non facciamo) ed è anche il più esposto a contaminazione nei dati di pre-training dei modelli. `validation` è quindi l'unico split held-out con le risposte note, ed è la convenzione in letteratura per i risultati zero-shot: i numeri restano confrontabili con quelli pubblicati.
+
+**Quante domande per run.** Il motore mescola lo split con seed fisso (`SEED` in `motore/config.py`, riproducibile tra run) e processa `min(NUM_TEST, dimensione dello split)` domande (default `NUM_TEST = 3000`, override con `--num`):
+
+- **BoolQ**: 3.000 domande su 3.270 (sottoinsieme fissato dal seed);
+- **CommonsenseQA**: tutte le 1.221 domande di validation (il tetto di 3.000 non viene raggiunto).
+
+---
+
 ## Struttura del CSV
 
 Il file ha esattamente **6 colonne** :

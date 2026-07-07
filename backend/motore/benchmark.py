@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import csv
 import json
+import random
 from dataclasses import asdict
 
 from datasets import load_dataset
@@ -17,6 +18,7 @@ from .config import (
     NUM_TEST,
     OUTPUT_CSV,
     RIPETIZIONI_PER_DOMANDA,
+    SEED,
     TOP_LOGPROBS,
 )
 from .estrazione import classifica, estrai_distribuzione
@@ -63,16 +65,23 @@ def _stampa_interrogazione(
     print(f"    Distribuzione classi: {_fmt_distribuzione(prob)}")
 
 
-def interroga_e_classifica(spec: DatasetSpec, d: Domanda) -> Alternativa | None:
+def interroga_e_classifica(spec: DatasetSpec, d: Domanda,
+                           verbose: bool = True) -> Alternativa | None:
     resp = interroga_ollama(spec.prompt_risposta(d), num_predict=10, logprobs=True)
     if not resp:
         return None
     prob, dettagli = estrai_distribuzione(resp, spec, d)
-    _stampa_interrogazione(spec, d, prob, dettagli)
+    if verbose:
+        _stampa_interrogazione(spec, d, prob, dettagli)
+    # Registra l'ordine di presentazione delle opzioni (solo dataset MC):
+    # senza, non si saprebbe quale permutazione ha prodotto questa risposta.
+    opzioni_mostrate = getattr(spec, "opzioni_mostrate", None)
+    ordine = [lettera for lettera, _ in opzioni_mostrate(d)] if opzioni_mostrate else None
     return Alternativa(
         domanda_alt=d.testo,
         risposta_pulita=classifica(prob),
         probabilita=prob,
+        ordine=ordine,
     )
 
 
@@ -154,6 +163,38 @@ def elabora_domanda(spec: DatasetSpec, id_domanda: int, riga_dataset: dict) -> R
 
 
 # ============================================================
+# MODALITA' ESAUSTIVA (tutte le varianti, nessun retry/scarto)
+# ============================================================
+def elabora_domanda_esaustiva(spec: DatasetSpec, id_domanda: int,
+                              riga_dataset: dict) -> RigaBenchmark:
+    """Interroga il modello su TUTTE le varianti enumerate dalla spec
+    (``varianti_esaustive``), una volta ciascuna: niente risposta di
+    riferimento, niente retry, niente scarti. L'output di ogni permutazione
+    e' una riga sola (i top-token completi renderebbero il log ingestibile)."""
+    domanda = spec.leggi_riga(riga_dataset)
+    riga = RigaBenchmark(
+        id=id_domanda,
+        domanda=domanda.testo,
+        reale=domanda.reale,
+    )
+
+    print(f"  Q: {domanda.testo}")
+    print(f"  Gold: {domanda.reale}{_testo_gold(spec, domanda)}")
+
+    for i, variante in enumerate(spec.varianti_esaustive(domanda), start=1):
+        alt = interroga_e_classifica(spec, variante, verbose=False)
+        if alt is None:
+            print(f"  perm {i:3d}: nessuna risposta dal modello, salto")
+            continue
+        esito = "✓" if alt.risposta_pulita == domanda.reale else "✗"
+        ordine = ",".join(alt.ordine) if alt.ordine else "-"
+        print(f"  perm {i:3d} [{ordine}] → {alt.risposta_pulita} {esito}")
+        riga.alternative.append(alt)
+
+    return riga
+
+
+# ============================================================
 # I/O CSV (scrittura incrementale)
 # ============================================================
 CSV_HEADER = ["id", "domanda", "reale", "num_scartate", "alternative_json", "scartate_json"]
@@ -169,12 +210,42 @@ def scrivi_riga(writer, file_handle, riga: RigaBenchmark) -> None:
 # ============================================================
 # ORCHESTRAZIONE
 # ============================================================
-def esegui_benchmark(spec: DatasetSpec, filename: str = OUTPUT_CSV) -> None:
+def esegui_benchmark(spec: DatasetSpec, filename: str = OUTPUT_CSV,
+                     esaustivo: bool = False, num_test: int | None = None) -> None:
+    """Esegue il benchmark su ``spec``.
+
+    - modalita' normale: ``num_test`` domande (default NUM_TEST) con
+      RIPETIZIONI_PER_DOMANDA ripetizioni e loop di convergenza;
+    - modalita' esaustiva (``esaustivo=True``): TUTTE le domande dello split
+      (salvo override di ``num_test``) su TUTTE le varianti enumerate dalla
+      spec, senza retry ne' scarti. Richiede l'hook ``varianti_esaustive``.
+    """
+    if esaustivo and getattr(spec, "varianti_esaustive", None) is None:
+        raise SystemExit(
+            f"Il dataset '{spec.nome}' non supporta la modalita' esaustiva: "
+            "la sua spec non definisce 'varianti_esaustive' (lo spazio delle "
+            "perturbazioni non e' enumerabile, es. parafrasi)."
+        )
+
+    # Con SEED fissato la run e' riproducibile: stesso sottoinsieme/ordine di
+    # domande e stesse permutazioni delle opzioni. Le risposte del modello
+    # restano comunque stocastiche (temperatura lato Ollama).
+    random.seed(SEED)
+
     print(f"Scarico o carico il dataset '{spec.hf_id}' dalla cache...")
     dataset = load_dataset(spec.hf_id)
-    dati = dataset[spec.split].shuffle()
+    dati = dataset[spec.split].shuffle(seed=SEED)
 
-    print(f"\nInizio test su {NUM_TEST} domande (con {RIPETIZIONI_PER_DOMANDA} ripetizioni l'una)...")
+    if esaustivo:
+        n = num_test if num_test is not None else len(dati)
+    else:
+        n = num_test if num_test is not None else NUM_TEST
+    n = min(n, len(dati))
+    if esaustivo:
+        print(f"\nInizio test ESAUSTIVO su {n} domande "
+              f"(tutte le permutazioni per ciascuna, nessuno scarto)...")
+    else:
+        print(f"\nInizio test su {n} domande (con {RIPETIZIONI_PER_DOMANDA} ripetizioni l'una)...")
     print(f"Dataset: {spec.nome} | Output incrementale su '{filename}'\n")
 
     with open(filename, mode="w", newline="", encoding="utf-8") as file:
@@ -182,9 +253,12 @@ def esegui_benchmark(spec: DatasetSpec, filename: str = OUTPUT_CSV) -> None:
         writer.writerow(CSV_HEADER)
         file.flush()
 
-        for i in range(NUM_TEST):
-            print(f"\nElaborazione Domanda {i + 1}/{NUM_TEST}")
-            riga = elabora_domanda(spec, i + 1, dati[i])
+        for i in range(n):
+            print(f"\nElaborazione Domanda {i + 1}/{n}")
+            if esaustivo:
+                riga = elabora_domanda_esaustiva(spec, i + 1, dati[i])
+            else:
+                riga = elabora_domanda(spec, i + 1, dati[i])
             scrivi_riga(writer, file, riga)
 
     print(f"\nSalvataggio completato su '{filename}'!")

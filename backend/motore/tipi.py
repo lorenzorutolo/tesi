@@ -30,11 +30,17 @@ class Alternativa:
     in piu' la chiave "altro" sempre presente. Esempi:
       - BoolQ: {"true": .., "false": .., "altro": ..}
       - MC 4 opzioni: {"A": .., "B": .., "C": .., "D": .., "altro": ..}
+
+    ``ordine`` registra, per i dataset che mostrano opzioni (MC), la sequenza
+    delle lettere canoniche nell'ordine in cui sono state presentate al modello
+    (es. ["C","A","E","B","D"]): senza, non si potrebbe ricostruire quale
+    permutazione ha prodotto questa risposta. None per i dataset senza opzioni.
     """
     domanda_alt: str
     risposta_pulita: str            # classe vincente (argmax), es. "true" o "C"
     probabilita: dict[str, float]   # {classe: prob_raw}; "altro" sempre presente
     convergente: bool = True
+    ordine: list[str] | None = None # lettere nell'ordine mostrato (solo MC)
 
 
 @dataclass
@@ -92,3 +98,13 @@ class DatasetSpec(Protocol):
         ne restituisce una parafrasi tramite il modello. La spec decide come
         usarlo (solo parafrasi, parafrasi + shuffle opzioni, ecc.)."""
         ...
+
+    # Hook OPZIONALI (il motore li cerca via getattr, come ``opzioni_mostrate``):
+    #
+    # def varianti_esaustive(self, d: Domanda) -> Iterator[Domanda]:
+    #     """Enumera TUTTE le varianti possibili di ``d``, senza ripetizioni,
+    #     con l'originale per prima. Ha senso solo quando lo spazio delle
+    #     perturbazioni e' finito (es. MC: le K! permutazioni delle opzioni);
+    #     BoolQ non lo definisce (le parafrasi non sono enumerabili). Usato
+    #     dalla modalita' esaustiva del benchmark, che interroga ogni variante
+    #     una volta sola, senza loop di convergenza ne' scarti."""

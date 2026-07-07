@@ -15,8 +15,9 @@ Scelta di design (vedi anche ``motore.tipi.DatasetSpec``):
 """
 from __future__ import annotations
 
+import itertools
 import random
-from typing import Callable
+from typing import Callable, Iterator
 
 from motore.tipi import Domanda
 
@@ -92,3 +93,19 @@ class CommonsenseQASpec:
             reale=corrente.reale,
             dati={"opzioni": nuovo},
         )
+
+    def varianti_esaustive(self, d: Domanda) -> Iterator[Domanda]:
+        # Tutte le K! permutazioni dell'ordine delle opzioni, senza ripetizioni
+        # (garantito da itertools.permutations), con l'ordine originale per
+        # primo cosi' che alternative[0] resti "l'originale" per l'analisi.
+        originale = tuple(_opzioni(d))
+        yield d
+        for perm in itertools.permutations(originale):
+            if perm == originale:
+                continue
+            yield Domanda(
+                testo=d.testo,
+                contesto=d.contesto,
+                reale=d.reale,
+                dati={"opzioni": list(perm)},
+            )
