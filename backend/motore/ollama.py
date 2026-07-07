@@ -11,7 +11,8 @@ import requests
 from .config import MODELLO, TOP_LOGPROBS, URL_OLLAMA
 
 
-def interroga_ollama(prompt: str, num_predict: int, logprobs: bool = False) -> dict:
+def interroga_ollama(prompt: str, num_predict: int, logprobs: bool = False,
+                     seed: int | None = None) -> dict:
     payload: dict[str, Any] = {
         "model": MODELLO,
         "prompt": prompt,
@@ -19,6 +20,10 @@ def interroga_ollama(prompt: str, num_predict: int, logprobs: bool = False) -> d
         "options": {"num_predict": num_predict},
         "raw": False,
     }
+    if seed is not None:
+        # Rende deterministico il campionamento (a parita' di versione/hardware
+        # del server Ollama); usato per la generazione delle parafrasi.
+        payload["options"]["seed"] = seed
     if logprobs:
         payload["logprobs"] = True
         payload["top_logprobs"] = TOP_LOGPROBS
@@ -42,11 +47,12 @@ def _prompt_parafrasi(domanda: str) -> str:
     )
 
 
-def parafrasa(testo: str) -> str:
+def parafrasa(testo: str, seed: int | None = None) -> str:
     """Restituisce una parafrasi di ``testo`` tramite il modello.
 
     In caso di errore o risposta vuota ritorna il testo originale, cosi' il
     chiamante puo' sempre proseguire. Questo servizio viene iniettato nelle spec
-    (vedi ``DatasetSpec.genera_variante``)."""
-    resp = interroga_ollama(_prompt_parafrasi(testo), num_predict=100)
+    (vedi ``DatasetSpec.varianti``); il motore lo avvolge in una versione che
+    passa un ``seed`` deterministico per chiamata."""
+    resp = interroga_ollama(_prompt_parafrasi(testo), num_predict=100, seed=seed)
     return resp.get("response", "").strip() or testo

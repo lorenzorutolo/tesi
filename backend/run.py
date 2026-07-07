@@ -1,20 +1,22 @@
 """Punto di ingresso CLI del motore di benchmark.
 
+Percorso unico: per ogni domanda il modello viene interrogato su TUTTE le
+varianti fornite dalla spec (le 120 permutazioni delle opzioni per
+commonsenseqa; originale + NUM_PARAFRASI parafrasi per boolq), tutte accettate:
+niente loop di convergenza ne' scarti (eventuali scarti a tempo di analisi).
+Default: tutte le domande dello split.
+
 Uso:
-    python backend/run.py [nome_dataset] [file_output.csv] [--permutazioni] [--num N]
+    python backend/run.py [nome_dataset] [file_output.csv] [--num N]
 
 Opzioni:
-    --permutazioni  modalita' esaustiva: interroga il modello su TUTTE le
-                    varianti enumerabili (es. le 120 permutazioni delle opzioni
-                    per commonsenseqa), senza loop di convergenza ne' scarti,
-                    su TUTTE le domande dello split (salvo --num).
     --num N         quante domande processare (override; utile per smoke test).
 
 Esempi:
-    python backend/run.py                # "boolq", CSV di default, modalita' normale
-    python backend/run.py boolq risultati.csv
-    python backend/run.py commonsenseqa risultati_perm.csv --permutazioni
-    python backend/run.py commonsenseqa test_perm.csv --permutazioni --num 2
+    python backend/run.py                # "boolq", CSV di default
+    python backend/run.py boolq risultati_boolq_par.csv
+    python backend/run.py commonsenseqa risultati_perm.csv
+    python backend/run.py boolq smoke_par.csv --num 2
 """
 import sys
 
@@ -30,10 +32,6 @@ from specifiche import REGISTRY
 
 def main(argv: list[str]) -> int:
     args = argv[1:]
-
-    esaustivo = "--permutazioni" in args
-    if esaustivo:
-        args.remove("--permutazioni")
 
     num_test = None
     if "--num" in args:
@@ -54,7 +52,7 @@ def main(argv: list[str]) -> int:
         print(f"Dataset '{nome}' sconosciuto. Disponibili: {disponibili}")
         return 1
 
-    esegui_benchmark(spec_cls(), filename, esaustivo=esaustivo, num_test=num_test)
+    esegui_benchmark(spec_cls(), filename, num_test=num_test)
     return 0
 
 

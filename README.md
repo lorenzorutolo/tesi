@@ -55,7 +55,7 @@ L'interfaccia web non legge più il CSV: interroga il modello in tempo reale tra
    npm run dev
    ```
 
-Vite inoltra le chiamate `/api/*` al backend su `:8000` (proxy in `vite.config.js`), quindi non serve copiare nessun CSV: al click del pulsante il frontend chiama `POST /api/interroga`, che estrae una domanda casuale e ne calcola originale + ripetizioni dal vivo.
+Vite inoltra le chiamate `/api/*` al backend su `:8000` (proxy in `vite.config.js`), quindi non serve copiare nessun CSV: al click del pulsante il frontend chiama `POST /api/interroga`, che estrae una domanda casuale e la interroga dal vivo su un sottoinsieme delle sue varianti (limitato per reattività, vedi `MAX_VARIANTI_LIVE` in `api.py`).
 
 ---
 
@@ -70,39 +70,40 @@ Vite inoltra le chiamate `/api/*` al backend su `:8000` (proxy in `vite.config.j
 
 **Perché lo split `validation`.** Per entrambi i dataset le etichette del test set non sono pubbliche: per CommonsenseQA lo split `test` esiste su HuggingFace ma ha `answerKey` vuoto, per BoolQ il test (~3.245 domande del paper originale) non è proprio incluso nella versione HF. Lo split `train` servirebbe al fine-tuning (che qui non facciamo) ed è anche il più esposto a contaminazione nei dati di pre-training dei modelli. `validation` è quindi l'unico split held-out con le risposte note, ed è la convenzione in letteratura per i risultati zero-shot: i numeri restano confrontabili con quelli pubblicati.
 
-**Quante domande per run.** Il motore mescola lo split con seed fisso (`SEED` in `motore/config.py`, riproducibile tra run) e processa `min(NUM_TEST, dimensione dello split)` domande (default `NUM_TEST = 3000`, override con `--num`):
+**Come funziona una run.** Percorso unico per tutti i dataset: il motore mescola lo split con seed fisso (`SEED` in `motore/config.py`) e, per ogni domanda, interroga il modello su **tutte le varianti** fornite dalla spec, una volta ciascuna, **tutte accettate** — niente risposta di riferimento, niente retry, niente scarti a runtime (eventuali scarti si fanno a tempo di analisi del CSV). Default: tutte le domande dello split (override con `--num`):
 
-- **BoolQ**: 3.000 domande su 3.270 (sottoinsieme fissato dal seed);
-- **CommonsenseQA**: tutte le 1.221 domande di validation (il tetto di 3.000 non viene raggiunto).
+- **BoolQ**: 3.270 domande × (1 originale + `NUM_PARAFRASI = 10` parafrasi). Le parafrasi sono generate dal modello **sempre a partire dall'originale** (indipendenti, non a catena) con un **seed Ollama deterministico per chiamata** (derivato da `SEED`): stessa run → stesse parafrasi.
+- **CommonsenseQA**: 1.221 domande × tutte le 5! = 120 permutazioni dell'ordine delle opzioni (enumerate, originale per prima).
+
+Con `SEED` fissato la run è quindi riproducibile end-to-end: varianti deterministiche e risposte deterministiche (argmax sui logprobs del primo token, indipendente dalla temperatura). Per le parafrasi la condizione (verificata empiricamente) è rieseguire **da server Ollama appena avviato** — la cache dei prompt di richieste precedenti può alterare la generazione a parità di seed — oltre alla parità di versione/hardware; sul cluster è la condizione naturale, dato che ogni job avvia la propria istanza. Riserva teorica residua: non-determinismo floating-point su GPU nei quasi-pareggi.
 
 ---
 
 ## Struttura del CSV
 
-Il file ha esattamente **6 colonne** :
+Il file ha esattamente **4 colonne** :
 
 ```
-id,domanda,reale,num_scartate,alternative_json,scartate_json
+id,domanda,reale,alternative_json
 ```
 
 | Colonna            | Tipo               | Significato                                                                                                  |
 | ------------------ | ------------------ | ------------------------------------------------------------------------------------------------------------ |
 | `id`               | `int`              | Indice progressivo della domanda (`1..N`)                                                                    |
-| `domanda`          | `str`              | Testo della domanda originale dal dataset BoolQ                                                              |
-| `reale`            | `"true"`/`"false"` | Risposta corretta di BoolQ                                                                                   |
-| `num_scartate`     | `int`              | Numero totale di parafrasi scartate per questa domanda (= `len(scartate_json)`)                              |
-| `alternative_json` | JSON (string)      | Lista serializzata delle `RIPETIZIONI_PER_DOMANDA` alternative **accettate** (originale + parafrasi valide)  |
-| `scartate_json`    | JSON (string)      | Lista serializzata delle parafrasi **scartate**  |
+| `domanda`          | `str`              | Testo della domanda originale dal dataset                                                                    |
+| `reale`            | `str`              | Classe corretta (`"true"`/`"false"` per BoolQ, lettera per il multiple-choice)                               |
+| `alternative_json` | JSON (string)      | Lista serializzata di **tutte** le varianti interrogate (originale + parafrasi/permutazioni, nessuna esclusa) |
+
+> I CSV prodotti prima del Test 002 hanno due colonne in più (`num_scartate`, `scartate_json`, eredità della vecchia logica di convergenza) e un campo `convergente` dentro le alternative: `generatore_grafici.py` legge le colonne per nome, quindi restano leggibili.
 
 ---
 
 ## Struttura di `alternative_json`
 
-È una **lista JSON** lunga `RIPETIZIONI_PER_DOMANDA`.
+È una **lista JSON** con una entry per variante interrogata (11 per BoolQ, 120 per CommonsenseQA).
 
-- L'**indice 0** è sempre la domanda originale ed è quella che **fissa la risposta di riferimento**.
-- Gli indici **`1..N-1`** sono varianti che **mantengono la stessa risposta dell'originale**: se una variante (parafrasi per BoolQ, shuffle delle opzioni per il multiple-choice) cambia idea al modello viene scartata e rigenerata (vedi `scartate_json`), fino a un massimo di `MAX_TENTATIVI_VARIANTE` tentativi. Ogni nuova variante nasce dall'ultima accettata.
-- Se per una rep si esauriscono i tentativi senza mai ottenere la stessa risposta, l'ultima parafrasi viene comunque tenuta e marcata con `convergente: false`.
+- L'**indice 0** è sempre la domanda originale.
+- Gli indici successivi sono le varianti (parafrasi per BoolQ, permutazioni per il multiple-choice), **tutte registrate qualunque sia la risposta**: se una variante fa cambiare idea al modello resta nel CSV — decidere come trattare questi *flip* è compito dell'analisi, non del motore.
 
 Ogni elemento è un oggetto con 4 campi spiegati di seguito:
 
@@ -111,36 +112,18 @@ Ogni elemento è un oggetto con 4 campi spiegati di seguito:
   "domanda_alt":     "Will additional installments of Bee and PuppyCat be produced?",
   "risposta_pulita": "true",
   "probabilita":     {"true": 0.999817930678194, "false": 0.00017985425916999988, "altro": 1.6143687038687492e-06},
-  "convergente":     true
+  "ordine":          null
 }
 ```
 
 | Campo             | Significato                                                                                                                                         |
 | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `domanda_alt`     | Testo effettivo presentato al modello in questa ripetizione (originale o parafrasi)                                                                 |
+| `domanda_alt`     | Testo effettivo presentato al modello in questa variante (originale o parafrasi)                                                                    |
 | `risposta_pulita` | Classe vincente decisa con `argmax` sulle classi del dataset (per BoolQ `"true"`/`"false"`, pareggio → `"altro"`)                                   |
 | `probabilita`     | Distribuzione `classe → massa di probabilità` sui token top-K. Le chiavi sono le classi dichiarate dal dataset più `"altro"` (sempre presente). Per BoolQ: `true`, `false`, `altro` |
-| `convergente`     | Flag che distingue parafrasi stabili da parafrasi che hanno cambiato risposta                         |
+| `ordine`          | Solo multiple-choice: lettere canoniche nell'ordine mostrato al modello (identifica la permutazione). `null` per i dataset senza opzioni (BoolQ)     |
 
 > Le chiavi di `probabilita` dipendono dal dataset: per il true/false sono `true`/`false`, per una multiple-choice a 4 opzioni sarebbero `A`/`B`/`C`/`D`. La chiave `altro` raccoglie la massa dei token non riconosciuti.
-
-### Il flag `convergente`
-
-Serve a distinguere due tipi diversi di entry dentro `alternative_json`:
-
-- **`convergente: true`** — caso normale. La parafrasi è stata accettata perché, interrogando il modello, ha prodotto la stessa `risposta_pulita` (`true`/`false`) della domanda originale. Rappresenta quindi una ripetizione *stabile*: stesso significato logico, stesso esito del modello.
-
-- **`convergente: false`** — caso eccezionale. Per quella ripetizione il modello ha cambiato risposta su **ogni** variante generata, fino a esaurire i `MAX_TENTATIVI_VARIANTE` tentativi disponibili. Per non lasciare buchi nella lista, l'**ultima** parafrasi tentata viene comunque salvata in `alternative_json`, ma marcata `convergente: false` per segnalare che non è una vera conferma del riferimento ma un *fallback forzato*.
-
----
-
-## Struttura di `scartate_json`
-
-Stessa forma di `alternative_json`: una **lista JSON** di oggetti con i medesimi 4 campi.
-
-Contiene tutte le parafrasi generate durante il retry che **hanno cambiato la risposta** rispetto al riferimento e sono state quindi scartate. 
-
-Nelle scartate il campo `convergente` **non va interpretato**: tutte le entry in `scartate_json` sono per costruzione divergenti dal riferimento — è proprio il motivo per cui sono finite qui
 
 > **Nota:** queste probabilità **non sono normalizzate**. 
 >
@@ -162,9 +145,3 @@ Da queste colonne, `generatore_grafici.py` ricostruisce (in modo **dataset-agnos
 > **Nota:** `generatore_grafici.py` legge il campo strutturato `probabilita` prodotto dal motore (`{true, false, altro}` per BoolQ, `{A, B, C, D, E, altro}` per CommonsenseQA) e ci lavora direttamente, senza campi piatti intermedi. Anche il frontend è allineato a `probabilita`.
 
 
-----
-
-**Esempi utili:**
-
-esempio di parafrasi rifatta perchè risposta differente da quella di domanda originale
-![alt text](documentazione/image.png)

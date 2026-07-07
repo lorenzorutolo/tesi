@@ -6,8 +6,9 @@ parafrasi, dato che per il true/false non c'e' nulla da rimescolare).
 """
 from __future__ import annotations
 
-from typing import Callable
+from typing import Callable, Iterator
 
+from motore.config import NUM_PARAFRASI
 from motore.tipi import Domanda
 
 SINONIMI_TRUE = {"yes", "truth", "correct", "right"}
@@ -46,12 +47,16 @@ class BoolQSpec:
             return "false"
         return None
 
-    def genera_variante(self, corrente: Domanda,
-                        parafrasa: Callable[[str], str]) -> Domanda:
-        # Per il true/false la sola perturbazione e' la parafrasi della domanda:
-        # contesto e risposta reale non cambiano.
-        return Domanda(
-            testo=parafrasa(corrente.testo),
-            contesto=corrente.contesto,
-            reale=corrente.reale,
-        )
+    def varianti(self, d: Domanda,
+                 parafrasa: Callable[[str], str]) -> Iterator[Domanda]:
+        # Originale + NUM_PARAFRASI parafrasi, tutte generate dall'ORIGINALE
+        # (indipendenti, non a catena): ogni variante e' una perturbazione
+        # della stessa formulazione, come le permutazioni nel multiple-choice.
+        # Contesto e risposta reale non cambiano.
+        yield d
+        for _ in range(NUM_PARAFRASI):
+            yield Domanda(
+                testo=parafrasa(d.testo),
+                contesto=d.contesto,
+                reale=d.reale,
+            )

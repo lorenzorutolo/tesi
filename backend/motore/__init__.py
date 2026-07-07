@@ -5,7 +5,6 @@ specifiche dei dataset.
 """
 from .benchmark import (
     elabora_domanda,
-    elabora_domanda_esaustiva,
     esegui_benchmark,
     interroga_e_classifica,
     scrivi_riga,
@@ -17,7 +16,6 @@ from .tipi import Alternativa, DatasetSpec, Domanda, RigaBenchmark
 __all__ = [
     "esegui_benchmark",
     "elabora_domanda",
-    "elabora_domanda_esaustiva",
     "interroga_e_classifica",
     "scrivi_riga",
     "interroga_ollama",

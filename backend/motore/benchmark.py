@@ -1,5 +1,12 @@
-"""Cuore del motore: interrogazione+classificazione, loop di convergenza,
-orchestrazione del benchmark e scrittura incrementale del CSV.
+"""Cuore del motore: interrogazione+classificazione, orchestrazione del
+benchmark e scrittura incrementale del CSV.
+
+Percorso di esecuzione UNICO per tutti i dataset: per ogni domanda il modello
+viene interrogato su TUTTE le varianti fornite dalla spec (``spec.varianti``),
+una volta ciascuna, e ogni esito viene registrato. Niente risposta di
+riferimento, niente retry, niente scarti: le decisioni su come trattare le
+varianti (es. parafrasi che ribaltano la risposta) si prendono a tempo di
+analisi del CSV.
 
 Tutto qui dentro e' agnostico rispetto al dataset: la logica dipende solo dalla
 ``DatasetSpec`` passata in input.
@@ -7,20 +14,14 @@ Tutto qui dentro e' agnostico rispetto al dataset: la logica dipende solo dalla
 from __future__ import annotations
 
 import csv
+import itertools
 import json
-import random
 from dataclasses import asdict
+from typing import Callable
 
 from datasets import load_dataset
 
-from .config import (
-    MAX_TENTATIVI_VARIANTE,
-    NUM_TEST,
-    OUTPUT_CSV,
-    RIPETIZIONI_PER_DOMANDA,
-    SEED,
-    TOP_LOGPROBS,
-)
+from .config import OUTPUT_CSV, SEED, TOP_LOGPROBS
 from .estrazione import classifica, estrai_distribuzione
 from .ollama import interroga_ollama, parafrasa
 from .tipi import Alternativa, DatasetSpec, Domanda, RigaBenchmark
@@ -86,7 +87,7 @@ def interroga_e_classifica(spec: DatasetSpec, d: Domanda,
 
 
 # ============================================================
-# LOOP DI CONVERGENZA 
+# ELABORAZIONE DI UNA DOMANDA (tutte le varianti, nessuno scarto)
 # ============================================================
 def _testo_gold(spec: DatasetSpec, domanda: Domanda) -> str:
     """Suffisso ` → "<testo>"` con il contenuto dell'opzione gold, se la spec
@@ -99,78 +100,18 @@ def _testo_gold(spec: DatasetSpec, domanda: Domanda) -> str:
     return ""
 
 
-def elabora_domanda(spec: DatasetSpec, id_domanda: int, riga_dataset: dict) -> RigaBenchmark:
-    domanda = spec.leggi_riga(riga_dataset)
-    riga = RigaBenchmark(
-        id=id_domanda,
-        domanda=domanda.testo,
-        reale=domanda.reale,
-    )
-    n = RIPETIZIONI_PER_DOMANDA
+def elabora_domanda(spec: DatasetSpec, id_domanda: int, riga_dataset: dict,
+                    parafrasa_srv: Callable[[str], str] = parafrasa,
+                    max_varianti: int | None = None) -> RigaBenchmark:
+    """Interroga il modello su TUTTE le varianti della domanda
+    (``spec.varianti``), una volta ciascuna, e le registra tutte.
 
-    print(f"  Q: {domanda.testo}")
-    print(f"  Gold: {domanda.reale}{_testo_gold(spec, domanda)}")
-
-    # rep 0: domanda originale, fissa la risposta di riferimento
-    print(f"\n  Rip. 1/{n} — originale")
-    alt_originale = interroga_e_classifica(spec, domanda)
-    if alt_originale is None:
-        return riga
-    riga.alternative.append(alt_originale)
-    # riferimento = classe (canonica) della domanda originale.
-    risposta_riferimento = alt_originale.risposta_pulita
-    print(f"    Risposta: {risposta_riferimento}   (riferimento fissato)")
-    domanda_corrente = domanda
-
-    # rep >= 1: varianti con retry finche' la risposta coincide con risposta_riferimento
-    for rep in range(1, RIPETIZIONI_PER_DOMANDA):
-        tentativi_falliti: list[Alternativa] = []
-        alt_accettata: Alternativa | None = None
-        variante_accettata: Domanda | None = None
-        ultima_variante: Domanda = domanda_corrente
-
-        for tentativo in range(MAX_TENTATIVI_VARIANTE):
-            variante = spec.genera_variante(domanda_corrente, parafrasa)
-            ultima_variante = variante
-
-            print(f"\n  Rip. {rep + 1}/{n} — variante [tentativo {tentativo + 1}]: {variante.testo}")
-            alt = interroga_e_classifica(spec, variante)
-            if alt is None:
-                continue
-
-            if alt.risposta_pulita == risposta_riferimento:  # la variante converge: esce dal loop
-                print(f"    Risposta: {alt.risposta_pulita}   ✓ converge con riferimento '{risposta_riferimento}'")
-                alt_accettata = alt
-                variante_accettata = variante
-                break
-            print(f"    Risposta: {alt.risposta_pulita}   ✗ scartata (≠ '{risposta_riferimento}')")
-            tentativi_falliti.append(alt)
-
-        if alt_accettata is not None:
-            riga.alternative.append(alt_accettata)
-            riga.scartate.extend(tentativi_falliti)
-            domanda_corrente = variante_accettata
-        elif tentativi_falliti:  # raggiunto il numero massimo: tieni l'ultima e segnala non convergente
-            ultima = tentativi_falliti[-1]
-            ultima.convergente = False
-            print(f"  ! Rip. {rep + 1}/{n} non convergente dopo {MAX_TENTATIVI_VARIANTE} tentativi: tengo l'ultima (risposta {ultima.risposta_pulita})")
-            riga.alternative.append(ultima)
-            riga.scartate.extend(tentativi_falliti[:-1])
-            # la domanda corrente resta l'ultima formulazione tentata
-            domanda_corrente = ultima_variante
-
-    return riga
-
-
-# ============================================================
-# MODALITA' ESAUSTIVA (tutte le varianti, nessun retry/scarto)
-# ============================================================
-def elabora_domanda_esaustiva(spec: DatasetSpec, id_domanda: int,
-                              riga_dataset: dict) -> RigaBenchmark:
-    """Interroga il modello su TUTTE le varianti enumerate dalla spec
-    (``varianti_esaustive``), una volta ciascuna: niente risposta di
-    riferimento, niente retry, niente scarti. L'output di ogni permutazione
-    e' una riga sola (i top-token completi renderebbero il log ingestibile)."""
+    ``parafrasa_srv`` e' il servizio di parafrasi da iniettare nella spec (il
+    default e' quello non seedato; ``esegui_benchmark`` passa la versione con
+    seed deterministico per chiamata). ``max_varianti`` limita il numero di
+    varianti interrogate (usato dall'API live per restare reattiva).
+    L'output di ogni variante e' una riga sola (i top-token completi
+    renderebbero il log ingestibile)."""
     domanda = spec.leggi_riga(riga_dataset)
     riga = RigaBenchmark(
         id=id_domanda,
@@ -181,14 +122,20 @@ def elabora_domanda_esaustiva(spec: DatasetSpec, id_domanda: int,
     print(f"  Q: {domanda.testo}")
     print(f"  Gold: {domanda.reale}{_testo_gold(spec, domanda)}")
 
-    for i, variante in enumerate(spec.varianti_esaustive(domanda), start=1):
+    varianti = spec.varianti(domanda, parafrasa_srv)
+    if max_varianti is not None:
+        varianti = itertools.islice(varianti, max_varianti)
+
+    for i, variante in enumerate(varianti, start=1):
         alt = interroga_e_classifica(spec, variante, verbose=False)
         if alt is None:
-            print(f"  perm {i:3d}: nessuna risposta dal modello, salto")
+            print(f"  var {i:3d}: nessuna risposta dal modello, salto")
             continue
         esito = "✓" if alt.risposta_pulita == domanda.reale else "✗"
-        ordine = ",".join(alt.ordine) if alt.ordine else "-"
-        print(f"  perm {i:3d} [{ordine}] → {alt.risposta_pulita} {esito}")
+        # Per i dataset MC identifica la variante l'ordine delle opzioni; per
+        # quelli a parafrasi il testo della variante stessa.
+        etichetta = ",".join(alt.ordine) if alt.ordine else variante.testo
+        print(f"  var {i:3d} [{etichetta}] → {alt.risposta_pulita} {esito}")
         riga.alternative.append(alt)
 
     return riga
@@ -197,58 +144,53 @@ def elabora_domanda_esaustiva(spec: DatasetSpec, id_domanda: int,
 # ============================================================
 # I/O CSV (scrittura incrementale)
 # ============================================================
-CSV_HEADER = ["id", "domanda", "reale", "num_scartate", "alternative_json", "scartate_json"]
+CSV_HEADER = ["id", "domanda", "reale", "alternative_json"]
 
 
 def scrivi_riga(writer, file_handle, riga: RigaBenchmark) -> None:
     alternative_json = json.dumps([asdict(a) for a in riga.alternative])
-    scartate_json = json.dumps([asdict(a) for a in riga.scartate])
-    writer.writerow([riga.id, riga.domanda, riga.reale, len(riga.scartate), alternative_json, scartate_json])
+    writer.writerow([riga.id, riga.domanda, riga.reale, alternative_json])
     file_handle.flush()
 
 
 # ============================================================
 # ORCHESTRAZIONE
 # ============================================================
+def _servizio_parafrasi_seedato() -> Callable[[str], str]:
+    """Avvolge ``parafrasa`` passando a Ollama un seed deterministico diverso
+    per ogni chiamata (SEED * 1_000_000 + contatore progressivo): a parita' di
+    run l'ordine delle chiamate e' lo stesso, quindi le parafrasi generate sono
+    le stesse. Con SEED None restituisce il servizio non seedato."""
+    if SEED is None:
+        return parafrasa
+    contatore = itertools.count()
+    return lambda testo: parafrasa(testo, seed=SEED * 1_000_000 + next(contatore))
+
+
 def esegui_benchmark(spec: DatasetSpec, filename: str = OUTPUT_CSV,
-                     esaustivo: bool = False, num_test: int | None = None) -> None:
-    """Esegue il benchmark su ``spec``.
-
-    - modalita' normale: ``num_test`` domande (default NUM_TEST) con
-      RIPETIZIONI_PER_DOMANDA ripetizioni e loop di convergenza;
-    - modalita' esaustiva (``esaustivo=True``): TUTTE le domande dello split
-      (salvo override di ``num_test``) su TUTTE le varianti enumerate dalla
-      spec, senza retry ne' scarti. Richiede l'hook ``varianti_esaustive``.
-    """
-    if esaustivo and getattr(spec, "varianti_esaustive", None) is None:
-        raise SystemExit(
-            f"Il dataset '{spec.nome}' non supporta la modalita' esaustiva: "
-            "la sua spec non definisce 'varianti_esaustive' (lo spazio delle "
-            "perturbazioni non e' enumerabile, es. parafrasi)."
-        )
-
-    # Con SEED fissato la run e' riproducibile: stesso sottoinsieme/ordine di
-    # domande e stesse permutazioni delle opzioni. Anche le risposte sono
-    # deterministiche (argmax sui logprobs del primo token, indipendente dalla
-    # temperatura): per i dataset senza parafrasi la run e' riproducibile
-    # end-to-end. Resta stocastica solo la generazione delle parafrasi (BoolQ),
-    # che usa il testo campionato a temperatura default (vedi ollama.parafrasa).
-    random.seed(SEED)
+                     num_test: int | None = None) -> None:
+    """Esegue il benchmark su ``spec``: TUTTE le domande dello split (salvo
+    override di ``num_test``), ciascuna su TUTTE le varianti fornite dalla
+    spec, senza retry ne' scarti."""
+    # Con SEED fissato la run e' riproducibile end-to-end: stesso ordine di
+    # domande (shuffle HF seedato), varianti deterministiche (le permutazioni
+    # MC sono enumerate; le parafrasi sono generate con seed Ollama per
+    # chiamata) e risposte deterministiche (argmax sui logprobs del primo
+    # token, indipendente dalla temperatura). Condizione verificata
+    # empiricamente per le parafrasi: server Ollama nello stesso stato, cioe'
+    # istanza appena avviata (come sul cluster, un'istanza per job) — la cache
+    # dei prompt di richieste precedenti puo' alterare la generazione — oltre
+    # alla solita parita' di versione/hardware.
+    parafrasa_srv = _servizio_parafrasi_seedato()
 
     print(f"Scarico o carico il dataset '{spec.hf_id}' dalla cache...")
     dataset = load_dataset(spec.hf_id)
     dati = dataset[spec.split].shuffle(seed=SEED)
 
-    if esaustivo:
-        n = num_test if num_test is not None else len(dati)
-    else:
-        n = num_test if num_test is not None else NUM_TEST
+    n = num_test if num_test is not None else len(dati)
     n = min(n, len(dati))
-    if esaustivo:
-        print(f"\nInizio test ESAUSTIVO su {n} domande "
-              f"(tutte le permutazioni per ciascuna, nessuno scarto)...")
-    else:
-        print(f"\nInizio test su {n} domande (con {RIPETIZIONI_PER_DOMANDA} ripetizioni l'una)...")
+    print(f"\nInizio test su {n} domande "
+          f"(tutte le varianti per ciascuna, nessuno scarto)...")
     print(f"Dataset: {spec.nome} | Output incrementale su '{filename}'\n")
 
     with open(filename, mode="w", newline="", encoding="utf-8") as file:
@@ -258,10 +200,7 @@ def esegui_benchmark(spec: DatasetSpec, filename: str = OUTPUT_CSV,
 
         for i in range(n):
             print(f"\nElaborazione Domanda {i + 1}/{n}")
-            if esaustivo:
-                riga = elabora_domanda_esaustiva(spec, i + 1, dati[i])
-            else:
-                riga = elabora_domanda(spec, i + 1, dati[i])
+            riga = elabora_domanda(spec, i + 1, dati[i], parafrasa_srv)
             scrivi_riga(writer, file, riga)
 
     print(f"\nSalvataggio completato su '{filename}'!")
