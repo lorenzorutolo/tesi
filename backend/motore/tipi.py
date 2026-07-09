@@ -6,7 +6,7 @@ ogni dataset si descrive implementando il Protocol ``DatasetSpec``.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable, Protocol
+from typing import Callable, Iterator, Protocol
 
 
 @dataclass
@@ -39,17 +39,20 @@ class Alternativa:
     domanda_alt: str
     risposta_pulita: str            # classe vincente (argmax), es. "true" o "C"
     probabilita: dict[str, float]   # {classe: prob_raw}; "altro" sempre presente
-    convergente: bool = True
     ordine: list[str] | None = None # lettere nell'ordine mostrato (solo MC)
 
 
 @dataclass
 class RigaBenchmark:
+    """Una domanda del dataset con gli esiti di TUTTE le sue varianti.
+
+    ``alternative[0]`` e' sempre la formulazione originale; nessuna variante
+    viene scartata a runtime (eventuali scarti si fanno in analisi del CSV).
+    """
     id: int
     domanda: str
     reale: str
     alternative: list[Alternativa] = field(default_factory=list)
-    scartate: list[Alternativa] = field(default_factory=list)
 
 
 class DatasetSpec(Protocol):
@@ -57,12 +60,12 @@ class DatasetSpec(Protocol):
 
     Tutto cio' che e' specifico del dataset vive qui dentro; il motore resta
     agnostico. Esempi di implementazioni:
-    - BoolQ: ``classi`` = ["true","false"], perturbazione = sola parafrasi.
+    - BoolQ: ``classi`` = ["true","false"], varianti = parafrasi della domanda.
     - Multiple-choice: ``classi`` sono le lettere delle
-      opzioni (es. ["A","B","C","D","E"]); la perturbazione e' lo shuffle delle
-      opzioni (salvate in ``Domanda.dati``). Le lettere sono INCOLLATE al
-      contenuto: ogni opzione conserva la propria lettera anche dopo lo shuffle,
-      che cambia solo l'ORDINE di presentazione. Cosi' la lettera scelta dal
+      opzioni (es. ["A","B","C","D","E"]); le varianti sono le permutazioni
+      dell'ordine delle opzioni. Le lettere sono INCOLLATE al contenuto: ogni
+      opzione conserva la propria lettera anche dopo il rimescolamento, che
+      cambia solo l'ORDINE di presentazione. Cosi' la lettera scelta dal
       modello e' gia' la chiave canonica e le distribuzioni restano stabili e
       confrontabili/mediabili tra le varianti, senza alcun rimappaggio.
     """
@@ -90,21 +93,23 @@ class DatasetSpec(Protocol):
         BoolQ non c'e' rimescolamento, quindi ``d`` viene ignorato."""
         ...
 
-    def genera_variante(self, corrente: Domanda,
-                        parafrasa: Callable[[str], str]) -> Domanda:
-        """Produce la prossima variante a partire da ``corrente``.
+    def varianti(self, d: Domanda,
+                 parafrasa: Callable[[str], str]) -> Iterator[Domanda]:
+        """Enumera TUTTE le varianti di ``d`` da interrogare, originale per
+        prima. Il motore le interroga una volta ciascuna e le accetta tutte:
+        niente risposta di riferimento, niente retry, niente scarti (eventuali
+        scarti si fanno a tempo di analisi del CSV).
 
-        ``parafrasa`` e' iniettato dal motore: e' un servizio che dato un testo
-        ne restituisce una parafrasi tramite il modello. La spec decide come
-        usarlo (solo parafrasi, parafrasi + shuffle opzioni, ecc.)."""
+        ``parafrasa`` e' iniettato dal motore: dato un testo ne restituisce una
+        parafrasi tramite il modello (con seed deterministico per chiamata).
+        La spec decide se e come usarlo: BoolQ genera NUM_PARAFRASI parafrasi
+        dell'originale, il multiple-choice lo ignora e enumera le K!
+        permutazioni delle opzioni."""
         ...
 
-    # Hook OPZIONALI (il motore li cerca via getattr, come ``opzioni_mostrate``):
+    # Hook OPZIONALI (il motore li cerca via getattr):
     #
-    # def varianti_esaustive(self, d: Domanda) -> Iterator[Domanda]:
-    #     """Enumera TUTTE le varianti possibili di ``d``, senza ripetizioni,
-    #     con l'originale per prima. Ha senso solo quando lo spazio delle
-    #     perturbazioni e' finito (es. MC: le K! permutazioni delle opzioni);
-    #     BoolQ non lo definisce (le parafrasi non sono enumerabili). Usato
-    #     dalla modalita' esaustiva del benchmark, che interroga ogni variante
-    #     una volta sola, senza loop di convergenza ne' scarti."""
+    # def opzioni_mostrate(self, d: Domanda) -> list[tuple[str, str]]:
+    #     """(lettera, testo) nell'ordine di visualizzazione corrente; usato per
+    #     la stampa a terminale e per registrare ``Alternativa.ordine``. Solo
+    #     per i dataset con opzioni (MC); BoolQ non lo definisce."""

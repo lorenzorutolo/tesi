@@ -35,3 +35,20 @@ parafrasi (BoolQ), quindi i test senza parafrasi sono riproducibili end-to-end.
 | Codice eseguito | Copia del repo al commit `0c02523` (il motore in questo branch, `de9089b`, è identico a meno di un commento in `benchmark.py`) |
 | Riproducibilità | Totale in teoria: nessuna parafrasi, varianti enumerate, risposta = argmax deterministico sui logprobs (unica riserva: non-determinismo floating-point su GPU nei quasi-pareggi) |
 | Verifiche | Ultima riga `id=1221` con 120 varianti; header integro; `sacct` COMPLETED |
+
+## Test 002 — Campagna parafrasi BoolQ
+
+| Campo | Valore |
+|---|---|
+| Risultati | `risultati_boolq_par.csv` (3.270 righe dati, 9,2 MB) |
+| Log | `job_43949.out` (job Slurm **43949** su Thor, partizione `gpu`) |
+| Lancio / fine | 2026-07-07 13:37 → 2026-07-08 (completato) |
+| Comando | `python run.py boolq /out/risultati_boolq_par.csv` (in container `benchmark.sif`, orchestrato da `cluster/run_benchmark.sh` con `USE_GPU=1`) |
+| Modello | `llama3` (8B) via Ollama, backend CUDA — sia risposte sia generazione parafrasi |
+| Hardware | 1× Tesla V100-PCIE-32GB (gnode, driver 575.57.08, CUDA 12.9) |
+| Seed | `SEED = 42` (`backend/motore/config.py`) — fissa shuffle dello split e modulo `random`; parafrasi seedate per chiamata (`SEED*1_000_000 + contatore`, vedi `benchmark.py`) |
+| Dataset | BoolQ, split `validation` completo (3.270 domande) |
+| Copertura | Percorso unico: per ogni domanda 1 originale + `NUM_PARAFRASI = 10` parafrasi indipendenti dell'originale, tutte registrate senza scarti (35.970 risposte + 32.700 generazioni) |
+| Codice eseguito | Copia del repo al commit `61490a1` (il motore in questo commit, merge di `4801c61`, è identico: la differenza è solo uno screenshot rimosso) |
+| Riproducibilità | Risposte deterministiche (argmax sui logprobs del primo token, seed fissato); le parafrasi sono riproducibili solo **da server Ollama appena avviato** (condizione documentata in `benchmark.py` e README) — sul cluster è automatica, un'istanza Ollama per job |
+| Verifiche | 3.270 righe (id 1–3270 unici); 11 elementi in `alternative_json` per ogni riga; `alternative[0]` = domanda originale; header a 4 colonne; dal log: backend CUDA su V100, "Salvataggio completato" alla domanda 3270/3270 |

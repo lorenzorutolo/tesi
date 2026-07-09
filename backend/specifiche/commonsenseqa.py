@@ -2,7 +2,7 @@
 
 Contiene tutto cio' che e' specifico di CommonsenseQA: mappatura dei campi
 grezzi, prompt a scelta multipla, riconoscimento della lettera scelta e
-generazione delle varianti tramite SHUFFLE delle opzioni.
+varianti = tutte le permutazioni dell'ordine delle opzioni.
 
 Scelta di design (vedi anche ``motore.tipi.DatasetSpec``):
 - le lettere sono INCOLLATE al contenuto: ogni opzione porta con se' la propria
@@ -16,7 +16,6 @@ Scelta di design (vedi anche ``motore.tipi.DatasetSpec``):
 from __future__ import annotations
 
 import itertools
-import random
 from typing import Callable, Iterator
 
 from motore.tipi import Domanda
@@ -76,28 +75,12 @@ class CommonsenseQASpec:
             return t
         return None
 
-    def genera_variante(self, corrente: Domanda,
-                        parafrasa: Callable[[str], str]) -> Domanda:
-        # Perturbazione = solo shuffle delle opzioni: stem e risposta reale
-        # (lettera originale) non cambiano. ``parafrasa`` non viene usato.
-        opzioni = _opzioni(corrente)
-        nuovo = list(opzioni)
-        if len(nuovo) > 1:
-            while True:
-                random.shuffle(nuovo)
-                if nuovo != opzioni:
-                    break
-        return Domanda(
-            testo=corrente.testo,
-            contesto=corrente.contesto,
-            reale=corrente.reale,
-            dati={"opzioni": nuovo},
-        )
-
-    def varianti_esaustive(self, d: Domanda) -> Iterator[Domanda]:
+    def varianti(self, d: Domanda,
+                 parafrasa: Callable[[str], str]) -> Iterator[Domanda]:
         # Tutte le K! permutazioni dell'ordine delle opzioni, senza ripetizioni
         # (garantito da itertools.permutations), con l'ordine originale per
         # primo cosi' che alternative[0] resti "l'originale" per l'analisi.
+        # ``parafrasa`` non viene usato: la perturbazione e' solo l'ordine.
         originale = tuple(_opzioni(d))
         yield d
         for perm in itertools.permutations(originale):
