@@ -11,8 +11,10 @@ Original file is located at
 
 import csv
 import json
+import math
 import os
 import sys
+import textwrap
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -45,7 +47,7 @@ if not IN_COLAB:
             except OSError:
                 pass
 
-    _figures_meta = []  # [(filename, titolo)]
+    _figures_meta = []  # [(filename, titolo, gruppo)]
 
     def _estrai_titolo(fig):
         for ax in fig.get_axes():
@@ -66,67 +68,145 @@ if not IN_COLAB:
         path = os.path.join(_OUT_DIR, filename)
         plt.savefig(path, dpi=120, bbox_inches="tight")
         titolo = _estrai_titolo(plt.gcf()) or f"Figura {n}"
-        _figures_meta.append((filename, titolo))
+        _figures_meta.append((filename, titolo, globals().get("GRUPPO", "Grafici")))
         print(f"  [{n:02d}] {titolo}")
         plt.close("all")
 
     plt.show = _show_and_save
 
-    def _genera_galleria():
-        if not _figures_meta:
-            return
-        items = "\n".join(
-            f'<li class="item" data-target="{fn}">{i + 1}. {t}</li>'
-            for i, (fn, t) in enumerate(_figures_meta)
-        )
-        first_fn, first_t = _figures_meta[0]
-        html = f"""<!doctype html>
+    # Galleria a confronto: 1/2/4 pannelli affiancati, sidebar con le figure
+    # raggruppate per tema, badge colorati = in quale pannello sta ogni figura.
+    _TEMPLATE_GALLERIA = """<!doctype html>
 <html lang="it"><head><meta charset="utf-8">
 <title>Grafici Benchmark</title>
 <style>
-  *{{box-sizing:border-box}}
-  body{{margin:0;font-family:-apple-system,Segoe UI,sans-serif;display:flex;height:100vh}}
-  aside{{width:340px;border-right:1px solid #ddd;overflow-y:auto;background:#fafafa}}
-  aside h1{{font-size:14px;margin:0;padding:14px 16px;border-bottom:1px solid #ddd;background:#fff}}
-  ul{{list-style:none;margin:0;padding:0}}
-  .item{{padding:10px 16px;cursor:pointer;border-bottom:1px solid #eee;font-size:13px;line-height:1.35}}
-  .item:hover{{background:#eef}}
-  .item.active{{background:#2196F3;color:#fff}}
-  main{{flex:1;padding:24px;overflow:auto;display:flex;flex-direction:column;align-items:center}}
-  h2{{font-size:18px;margin:0 0 16px;text-align:center}}
-  img{{max-width:100%;max-height:calc(100vh - 80px);object-fit:contain;box-shadow:0 2px 8px rgba(0,0,0,.1)}}
-  .hint{{position:fixed;bottom:8px;right:12px;font-size:11px;color:#888}}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,Segoe UI,sans-serif;display:flex;height:100vh;background:#eceff1}
+  aside{width:330px;border-right:1px solid #ddd;overflow-y:auto;background:#fafafa;flex-shrink:0}
+  aside h1{font-size:13px;margin:0;padding:12px 14px;border-bottom:1px solid #ddd;background:#fff}
+  .layouts{display:flex;gap:6px;padding:10px 14px;border-bottom:1px solid #ddd;background:#fff;align-items:center}
+  .layouts span{font-size:11px;color:#888;margin-right:4px}
+  .layouts button{width:34px;height:26px;border:1px solid #bbb;background:#fff;border-radius:4px;cursor:pointer;font-weight:bold}
+  .layouts button.sel{background:#2196F3;border-color:#2196F3;color:#fff}
+  details{border-bottom:1px solid #eee}
+  summary{padding:8px 14px;font-size:12px;font-weight:bold;cursor:pointer;background:#f0f0f0;user-select:none}
+  ul{list-style:none;margin:0;padding:0}
+  .item{display:flex;align-items:flex-start;gap:6px;padding:7px 10px 7px 14px;cursor:pointer;border-bottom:1px solid #f2f2f2;font-size:12px;line-height:1.3}
+  .item:hover{background:#e3f2fd}
+  .item .num{color:#999;font-weight:bold}
+  .item .tit{flex:1}
+  .item .badges{display:flex;gap:3px}
+  .badge{width:16px;height:16px;border-radius:50%;color:#fff;font-size:10px;font-weight:bold;display:flex;align-items:center;justify-content:center}
+  .b0{background:#2196F3}.b1{background:#FF9800}.b2{background:#4CAF50}.b3{background:#9C27B0}
+  main{flex:1;display:grid;gap:8px;padding:8px;min-width:0}
+  main[data-layout="1"]{grid-template-columns:1fr;grid-template-rows:1fr}
+  main[data-layout="2"]{grid-template-columns:1fr 1fr;grid-template-rows:1fr}
+  main[data-layout="4"]{grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr}
+  .pannello{border:2px solid #cfd8dc;border-radius:6px;background:#fff;display:flex;flex-direction:column;overflow:hidden;cursor:pointer;min-height:0;min-width:0}
+  .pannello.attivo{box-shadow:0 0 0 2px currentColor}
+  .pannello .barra{display:flex;align-items:center;gap:8px;padding:6px 10px;border-bottom:1px solid #eee}
+  .pannello .tag{font-size:10px;font-weight:bold;color:#fff;padding:2px 7px;border-radius:10px}
+  .pannello h2{font-size:12px;margin:0;flex:1;font-weight:600;color:#37474F}
+  .pannello img{flex:1;min-height:0;width:100%;object-fit:contain;background:#fff}
+  .hint{position:fixed;bottom:6px;right:12px;font-size:11px;color:#78909c;background:#fff;padding:3px 8px;border-radius:4px;box-shadow:0 1px 3px rgba(0,0,0,.15)}
 </style></head><body>
 <aside>
-  <h1>Grafici ({len(_figures_meta)})</h1>
-  <ul id="lista">{items}</ul>
+  <h1>Grafici (__N__) &mdash; __CSV__</h1>
+  <div class="layouts"><span>Pannelli:</span>
+    <button data-n="1">1</button><button data-n="2" class="sel">2</button><button data-n="4">4</button>
+  </div>
+  <div id="gruppi">__SEZIONI__</div>
 </aside>
-<main>
-  <h2 id="titolo">{first_t}</h2>
-  <img id="img" src="{first_fn}" alt="">
-</main>
-<div class="hint">Usa &uarr; / &darr; per navigare</div>
+<main id="pannelli" data-layout="2"></main>
+<div class="hint">clic pannello = attiva &middot; clic figura = assegna &middot; &uarr;&darr; figura &middot; &larr;&rarr; pannello &middot; 1/2/4 layout &middot; doppio clic = apri PNG</div>
 <script>
-  const items = document.querySelectorAll('.item');
-  const img = document.getElementById('img');
-  const titolo = document.getElementById('titolo');
-  items[0].classList.add('active');
-  function attiva(it){{
-    items.forEach(x=>x.classList.remove('active'));
-    it.classList.add('active');
-    img.src = it.dataset.target;
-    titolo.textContent = it.textContent.replace(/^\\d+\\.\\s*/, '');
-    it.scrollIntoView({{block:'nearest'}});
-  }}
-  items.forEach(it=>it.addEventListener('click', ()=>attiva(it)));
-  document.addEventListener('keydown', e=>{{
-    const active = document.querySelector('.item.active');
-    let target = null;
-    if (e.key === 'ArrowDown') target = active.nextElementSibling;
-    if (e.key === 'ArrowUp')   target = active.previousElementSibling;
-    if (target) attiva(target);
-  }});
+const FIGURE = __DATA__;
+const COLORI = ['#2196F3','#FF9800','#4CAF50','#9C27B0'];
+let layout = 2, attivo = 0;
+const assegnate = [0,1,2,3].map(i => Math.min(i, FIGURE.length-1));
+const main = document.getElementById('pannelli');
+const pannelli = [];
+for (let i=0;i<4;i++){
+  const p = document.createElement('section');
+  p.className = 'pannello';
+  p.style.color = COLORI[i];
+  p.innerHTML = '<div class="barra"><span class="tag" style="background:'+COLORI[i]+'">'+(i+1)+
+                '</span><h2></h2></div><img alt="">';
+  p.addEventListener('click', ()=>{ attivo = i; render(); });
+  p.addEventListener('dblclick', ()=>window.open(FIGURE[assegnate[i]].fn));
+  main.appendChild(p); pannelli.push(p);
+}
+const items = [...document.querySelectorAll('.item')];
+items.forEach(it => it.addEventListener('click', ()=>{ assegnate[attivo] = +it.dataset.i; render(); }));
+function render(){
+  main.dataset.layout = layout;
+  if (attivo >= layout) attivo = 0;
+  pannelli.forEach((p,i)=>{
+    p.style.display = i < layout ? '' : 'none';
+    p.classList.toggle('attivo', i === attivo);
+    const f = FIGURE[assegnate[i]];
+    p.querySelector('h2').textContent = f.titolo;
+    p.querySelector('img').src = f.fn;
+  });
+  items.forEach(it=>{ it.querySelector('.badges').innerHTML = ''; });
+  for (let i=0;i<layout;i++){
+    const it = items[assegnate[i]];
+    if (!it) continue;
+    const b = document.createElement('span');
+    b.className = 'badge b'+i; b.textContent = i+1;
+    it.querySelector('.badges').appendChild(b);
+  }
+}
+document.querySelectorAll('.layouts button').forEach(btn=>{
+  btn.addEventListener('click', ()=>{
+    layout = +btn.dataset.n;
+    document.querySelectorAll('.layouts button').forEach(b=>b.classList.toggle('sel', b===btn));
+    render();
+  });
+});
+document.addEventListener('keydown', e=>{
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp'){
+    e.preventDefault();
+    const d = e.key === 'ArrowDown' ? 1 : -1;
+    assegnate[attivo] = (assegnate[attivo] + d + FIGURE.length) % FIGURE.length;
+    render();
+    const it = items[assegnate[attivo]];
+    if (it) it.scrollIntoView({block:'nearest'});
+  } else if (e.key === 'ArrowRight' || e.key === 'ArrowLeft'){
+    const d = e.key === 'ArrowRight' ? 1 : -1;
+    attivo = (attivo + d + layout) % layout;
+    render();
+  } else if (['1','2','4'].includes(e.key)){
+    layout = +e.key;
+    document.querySelectorAll('.layouts button').forEach(b=>b.classList.toggle('sel', b.dataset.n===e.key));
+    render();
+  }
+});
+render();
 </script></body></html>"""
+
+    def _genera_galleria():
+        if not _figures_meta:
+            return
+        dati = json.dumps([{"fn": fn, "titolo": t} for fn, t, _g in _figures_meta],
+                          ensure_ascii=False)
+        gruppi = {}
+        for i, (fn, t, g) in enumerate(_figures_meta):
+            gruppi.setdefault(g, []).append((i, t))
+        sezioni = []
+        for g, voci in gruppi.items():
+            righe = "\n".join(
+                f'<li class="item" data-i="{i}"><span class="num">{i + 1:02d}</span>'
+                f'<span class="tit">{t}</span><span class="badges"></span></li>'
+                for i, t in voci)
+            sezioni.append(f'<details open><summary>{g} ({len(voci)})</summary>'
+                           f'<ul>{righe}</ul></details>')
+        csv_nome = os.path.basename(str(globals().get("NOME_FILE", "")))
+        html = (_TEMPLATE_GALLERIA
+                .replace("__CSV__", csv_nome)
+                .replace("__N__", str(len(_figures_meta)))
+                .replace("__SEZIONI__", "\n".join(sezioni))
+                .replace("__DATA__", dati))
         index_path = os.path.join(_OUT_DIR, "index.html")
         with open(index_path, "w", encoding="utf-8") as f:
             f.write(html)
@@ -201,6 +281,35 @@ def entropia(probs: dict, classi: list, includi_altro: bool = True) -> float:
         return 0.0
     p = [v / somma for v in valori]
     return scipy_entropy(p, base=len(chiavi))
+
+
+def kl_simmetrica(p: dict, q: dict, classi: list, includi_altro: bool = True) -> float:
+    """Divergenza di Kullback-Leibler simmetrizzata: [D(P||Q) + D(Q||P)] / 2.
+
+    Stesse convenzioni di ``entropia``: distribuzioni rinormalizzate sulle
+    chiavi considerate e log in base ``len(chiavi)``, cosi' la scala e'
+    confrontabile con l'entropia normalizzata. I termini con P(x) = 0 o
+    Q(x) = 0 contano zero.
+    """
+    chiavi = list(classi) + (["altro"] if includi_altro else [])
+    if len(chiavi) < 2:
+        return 0.0
+
+    def _normalizza(d):
+        v = [d.get(k, 0.0) for k in chiavi]
+        s = sum(v)
+        return [x / s for x in v] if s > 0 else None
+
+    P = _normalizza(p)
+    Q = _normalizza(q)
+    if P is None or Q is None:
+        return 0.0
+    base = len(chiavi)
+
+    def _dkl(a, b):
+        return sum(x * math.log(x / y, base) for x, y in zip(a, b) if x > 0 and y > 0)
+
+    return (_dkl(P, Q) + _dkl(Q, P)) / 2
 
 
 def distribuzione_media(alternative: list, classi: list, includi_altro: bool) -> dict:
@@ -439,28 +548,55 @@ def stampa_matrice_kxk(M, classi, titolo):
     plt.show()
 
 
+def _nuvola_punti(ax, centro, valori, nome_cmap):
+    """Nuvola di punti leggibile anche con migliaia di valori sovrapposti.
+
+    Tre accorgimenti combinati:
+      - colore sfumato con la densita' locale (istogramma sui valori):
+        chiaro = zona rada, scuro = zona affollata;
+      - jitter orizzontale proporzionale alla densita' (stile sina plot):
+        le fasce affollate si allargano, i punti isolati restano stretti;
+      - alpha e dimensione adattivi al numero di punti.
+    """
+    v = np.asarray(valori, dtype=float)
+    n = len(v)
+    if n == 0:
+        return
+    nbins = int(np.clip(np.sqrt(n), 10, 60))
+    conti, bordi = np.histogram(v, bins=nbins)
+    idx = np.clip(np.digitize(v, bordi[1:-1]), 0, nbins - 1)
+    dens = np.log1p(conti[idx].astype(float))  # scala log: sfumatura leggibile
+    dens /= dens.max() if dens.max() > 0 else 1.0  # anche fuori dal picco a 0
+    jitter = np.random.uniform(-1, 1, n) * (0.03 + 0.17 * dens)
+    alpha = float(np.clip(2000.0 / n, 0.08, 0.7))
+    size = float(np.clip(8000.0 / n, 4.0, 36.0))
+    colori = plt.get_cmap(nome_cmap)(0.35 + 0.60 * dens)
+    ordine = np.argsort(dens)  # i punti densi sopra, il nucleo resta visibile
+    ax.scatter(centro + jitter[ordine], v[ordine], s=size,
+               c=colori[ordine], alpha=alpha, linewidths=0, zorder=2)
+
+
 def _scatter_box(ax, corrette, errate):
-    """Boxplot + scatter con jitter di due gruppi (corrette / errate)."""
+    """Boxplot + nuvola densita'-aware di due gruppi (corrette / errate)."""
     bp = ax.boxplot([corrette, errate], positions=[1, 2], widths=0.4,
-                    patch_artist=True, showfliers=False, zorder=1)
+                    patch_artist=True, showfliers=False, zorder=3)
     for patch, edge in zip(bp['boxes'], ['#4CAF50', '#F44336']):
-        patch.set_facecolor('#FFFFFF')
+        patch.set_facecolor('none')
         patch.set_edgecolor(edge)
         patch.set_linewidth(1.5)
     for median in bp['medians']:
         median.set(color='black', linewidth=2)
 
-    jc = np.random.normal(1, 0.05, size=len(corrette))
-    je = np.random.normal(2, 0.05, size=len(errate))
-    ax.scatter(jc, corrette, alpha=0.6, color='#4CAF50', edgecolors='white',
-               linewidth=0.5, label=f'Esatte ({len(corrette)})', zorder=2)
-    ax.scatter(je, errate, alpha=0.6, color='#F44336', edgecolors='white',
-               linewidth=0.5, label=f'Sbagliate ({len(errate)})', zorder=2)
+    _nuvola_punti(ax, 1, corrette, 'Greens')
+    _nuvola_punti(ax, 2, errate, 'Reds')
 
     ax.set_xticks([1, 2])
     ax.set_xticklabels(['Risposte Esatte', 'Risposte Sbagliate'],
                        fontsize=11, fontweight='bold')
-    ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.1), ncol=2)
+    ax.legend(handles=[
+        mpatches.Patch(color='#4CAF50', label=f'Esatte ({len(corrette)})'),
+        mpatches.Patch(color='#F44336', label=f'Sbagliate ({len(errate)})'),
+    ], loc='upper center', bbox_to_anchor=(0.5, -0.1), ncol=2)
     ax.grid(axis='y', linestyle='--', alpha=0.7, zorder=0)
 
 
@@ -539,6 +675,50 @@ def raccogli_entropia(res, livello, includi_altro):
     return valori, esiti
 
 
+def descrittori_per_domanda(res, includi_altro):
+    """I 9 descrittori per domanda richiesti dal relatore, piu' gli esiti.
+
+    Le righe con meno di 2 ripetizioni sono escluse (il max KL richiede almeno
+    una coppia), cosi' tutti i descrittori restano allineati sulle stesse domande.
+    """
+    descr = {
+        "[1] Entropia della media": [],
+        "[2] Media delle entropie": [],
+        "[3] Massima entropia": [],
+        "[4] Minima entropia": [],
+        "[5] Max KL": [],
+        "[6] Entropia della media - Media delle entropie": [],
+        "[7] Massima - Minima entropia": [],
+        "[8] Massima entropia - Max KL": [],
+        "[9] Minima entropia - Max KL": [],
+    }
+    esiti = []
+    for riga in res.risultati_per_tabella:
+        alts = [a.get("probabilita", {}) for a in riga["alternative"]]
+        if len(alts) < 2:
+            continue
+        ents = [entropia(p, res.classi, includi_altro) for p in alts]
+        ent_media = entropia(
+            distribuzione_media(riga["alternative"], res.classi, includi_altro),
+            res.classi, includi_altro)
+        media_ent = float(np.mean(ents))
+        max_ent = max(ents)
+        min_ent = min(ents)
+        max_kl = max(kl_simmetrica(alts[i], alts[j], res.classi, includi_altro)
+                     for i in range(len(alts)) for j in range(i + 1, len(alts)))
+        descr["[1] Entropia della media"].append(ent_media)
+        descr["[2] Media delle entropie"].append(media_ent)
+        descr["[3] Massima entropia"].append(max_ent)
+        descr["[4] Minima entropia"].append(min_ent)
+        descr["[5] Max KL"].append(max_kl)
+        descr["[6] Entropia della media - Media delle entropie"].append(ent_media - media_ent)
+        descr["[7] Massima - Minima entropia"].append(max_ent - min_ent)
+        descr["[8] Massima entropia - Max KL"].append(max_ent - max_kl)
+        descr["[9] Minima entropia - Max KL"].append(min_ent - max_kl)
+        esiti.append(riga["corretta"])
+    return descr, esiti
+
+
 """[6] Esecuzione: caricamento e rilevamento delle classi"""
 
 res = carica_da_csv(NOME_FILE)
@@ -548,6 +728,8 @@ binario = (K == 2)
 print(f"Classi rilevate: {res.classi} (K={K}) | dataset {'BINARIO' if binario else 'MULTI-CLASSE'}")
 
 """[7] Accuratezza globale (Originale / Varianti / Maggioranza)"""
+
+GRUPPO = "Accuratezza"
 
 acc_orig = res.corrette_orig / res.totali_orig * 100 if res.totali_orig else 0.0
 acc_mod = res.corrette_mod / res.totali_mod * 100 if res.totali_mod else 0.0
@@ -570,6 +752,8 @@ ax.grid(axis='y', linestyle='--', alpha=0.7)
 plt.show()
 
 """[8] Matrici di confusione 2x2 + precision/recall: SOLO dataset binari"""
+
+GRUPPO = "Matrici di confusione"
 
 if binario:
     stampa_matrice(res.tp_orig, res.tn_orig, res.fp_orig, res.fn_orig, f"Originale ({acc_orig:.1f}%)")
@@ -604,6 +788,7 @@ LIVELLI = [
 for includi_altro in (False, True):
     n_cls = K + (1 if includi_altro else 0)
     tag = f"{'con' if includi_altro else 'senza'} altro, {n_cls} classi"
+    GRUPPO = f"Entropia ({tag})"
     colore, edge = ('#FF9800', '#E65100') if includi_altro else ('#2196F3', '#1565C0')
     for livello, etich in LIVELLI:
         valori, esiti = raccogli_entropia(res, livello, includi_altro)
@@ -617,6 +802,8 @@ for includi_altro in (False, True):
             colore=colore, edge=edge)
 
 """[10] MaxEnt e Delta entropia per domanda (stabilita' tra ripetizioni)"""
+
+GRUPPO = "Stabilità tra ripetizioni"
 
 for includi_altro in (False, True):
     n_cls = K + (1 if includi_altro else 0)
@@ -651,6 +838,8 @@ rinormalizziamo: il denominatore corretto e' l'unita'. Si lavora in log-prob
 (ln) su asse lineare con floor a 1e-4, poi si media sulle ripetizioni.
 """
 
+GRUPPO = "Massa fuori-task"
+
 EPS = 1e-4  # floor: sotto questa soglia la massa fuori-task e' trascurabile
 logp_fuori = []
 esiti_row = []
@@ -676,3 +865,158 @@ if logp_fuori:
         ylim=None)
 else:
     print("⚠️ Nessun dato valido per il log-prob fuori-task.")
+
+"""[12] Divergenza KL simmetrizzata tra le ripetizioni (per ora solo stampa)
+
+Come da indicazione del relatore: per ogni domanda si calcola la KL
+simmetrizzata su tutte le coppie DISTINTE di ripetizioni (originale inclusa,
+n(n-1)/2 coppie) e si prende la distanza MASSIMA. KL ~ 0 = il modello risponde
+con la stessa distribuzione a prescindere dalla formulazione; KL alta = almeno
+una coppia di formulazioni sposta nettamente la risposta.
+
+La coppia che realizza il massimo viene mostrata in dettaglio dalla sezione
+[14] come tabella in galleria; qui si salva in ``coppia_max_kl``.
+"""
+
+coppia_max_kl = {}  # includi_altro -> (kl, riga, i, j)
+
+print("\n" + "=" * 78)
+print("DIVERGENZA KL SIMMETRIZZATA — MAX SULLE COPPIE (log in base al n. di classi)")
+for includi_altro in (False, True):
+    n_cls = K + (1 if includi_altro else 0)
+    tag = f"{'con' if includi_altro else 'senza'} altro, {n_cls} classi"
+    n_domande = 0
+    migliore = None  # (kl, riga, i, j) della coppia con la distanza massima
+    for riga in res.risultati_per_tabella:
+        alts = [a.get("probabilita", {}) for a in riga["alternative"]]
+        if len(alts) < 2:
+            continue
+        n_domande += 1
+        for i in range(len(alts)):
+            for j in range(i + 1, len(alts)):
+                kl = kl_simmetrica(alts[i], alts[j], res.classi, includi_altro)
+                if migliore is None or kl > migliore[0]:
+                    migliore = (kl, riga, i, j)
+    if migliore is None:
+        print(f"⚠️ Nessun dato valido per la KL ({tag}).")
+        continue
+    coppia_max_kl[includi_altro] = migliore
+    print(f"KLsym massima ({tag}) su {n_domande} domande: {migliore[0]:.4f}")
+
+"""[13] Tabella Pearson: i 9 descrittori del relatore vs esito (maggioranza)
+
+Per ogni descrittore, Pearson r contro l'esito codificato come 0=corretta,
+1=errata (stessa convenzione dei grafici: r > 0 = descrittore piu' alto sulle
+domande sbagliate). La tabella entra nella galleria come pagina di grafici.
+"""
+
+GRUPPO = "Tabella Pearson"
+
+for includi_altro in (False, True):
+    n_cls = K + (1 if includi_altro else 0)
+    tag = f"{'con' if includi_altro else 'senza'} altro, {n_cls} classi"
+    descr, esiti = descrittori_per_domanda(res, includi_altro)
+    if len(esiti) < 2:
+        print(f"⚠️ Dati insufficienti per la tabella Pearson ({tag}).")
+        continue
+    corr = [0 if ok else 1 for ok in esiti]
+    righe = []
+    for nome, valori in descr.items():
+        pr = stats.pearsonr(valori, corr)
+        righe.append((nome, pr.statistic, pr.pvalue))
+    i_max = max(range(len(righe)), key=lambda i: abs(righe[i][1]))
+
+    fig, ax = plt.subplots(figsize=(9, 5.5), dpi=100)
+    ax.axis('off')
+    celle = [[nome, f"{r:+.4f}"] for nome, r, _p in righe]
+    tab = ax.table(cellText=celle,
+                   colLabels=["Descrittore", "r"],
+                   colWidths=[0.72, 0.28],
+                   cellLoc='center', loc='center')
+    tab.auto_set_font_size(False)
+    tab.set_fontsize(10)
+    tab.scale(1, 1.6)
+    for (r_i, c_i), cella in tab.get_celld().items():
+        if r_i == 0:
+            cella.set_text_props(fontweight='bold', color='white')
+            cella.set_facecolor('#37474F')
+        else:
+            if r_i % 2 == 0:
+                cella.set_facecolor('#ECEFF1')
+            if c_i == 0:
+                cella._loc = 'left'
+            if r_i == i_max + 1:
+                cella.set_text_props(fontweight='bold')
+    ax.set_title(f"Pearson descrittori vs esito (maggioranza) — {tag}", pad=15)
+    fig.text(0.5, 0.05,
+             f"esito: 0=corretta, 1=errata — "
+             f"n={len(esiti)} domande — in grassetto il |r| massimo",
+             ha='center', fontsize=9, style='italic', color='#546E7A')
+    plt.show()
+
+"""[14] La coppia di distribuzioni con la KL massima globale (tabella in galleria)
+
+Pagina della galleria (una per regime) con una tabella a due righe, una per
+formulazione della coppia trovata dalla sezione [12] (``coppia_max_kl``):
+numero ripetizione, testo della domanda, una colonna di probabilita' per
+classe (rinormalizzata sulle chiavi considerate) ed entropia. Il valore del
+max KL sta nel titolo.
+"""
+
+GRUPPO = "Coppia max KL"
+
+for includi_altro in (False, True):
+    if includi_altro not in coppia_max_kl:
+        continue
+    n_cls = K + (1 if includi_altro else 0)
+    tag = f"{'con' if includi_altro else 'senza'} altro, {n_cls} classi"
+    chiavi = list(res.classi) + (["altro"] if includi_altro else [])
+    kl, riga, i, j = coppia_max_kl[includi_altro]
+
+    celle = []
+    risposte = []
+    for idx in (i, j):
+        alt = riga["alternative"][idx]
+        prob = alt.get("probabilita", {})
+        somma = sum(prob.get(c, 0.0) for c in chiavi)
+        valori = [prob.get(c, 0.0) / somma if somma > 0 else 0.0 for c in chiavi]
+        ent = entropia(prob, res.classi, includi_altro)
+        nome = "originale" if idx == 0 else f"parafrasi {idx}"
+        risposte.append(f"rip. {idx} → {alt.get('risposta_pulita', '?')}")
+        testo = textwrap.fill(str(alt.get("domanda_alt", "?")), width=55)
+        # Per le permutazioni il testo e' identico tra le ripetizioni: cio' che
+        # cambia e' l'ordine delle opzioni, salvato dal motore in "ordine".
+        if alt.get("ordine"):
+            testo += "\nordine opzioni: " + " ".join(alt["ordine"])
+        celle.append(
+            [f"{idx} ({nome})", testo]
+            + [f"{v:.4f}" if v == 0 or v >= 0.001 else f"{v:.1e}" for v in valori]
+            + [f"{ent:.4f}"])
+
+    fig, ax = plt.subplots(figsize=(12, 3.6), dpi=100)
+    ax.axis('off')
+    tab = ax.table(cellText=celle,
+                   colLabels=["Ripetizione", "Testo domanda"]
+                             + [f"%{c}" for c in chiavi] + ["Entropia"],
+                   colWidths=[0.13, 0.45] + [0.32 / len(chiavi)] * len(chiavi) + [0.10],
+                   cellLoc='center', loc='center')
+    tab.auto_set_font_size(False)
+    tab.set_fontsize(10)
+    tab.scale(1, 3.0)
+    for (r_i, c_i), cella in tab.get_celld().items():
+        if r_i == 0:
+            cella.set_text_props(fontweight='bold', color='white')
+            cella.set_facecolor('#37474F')
+        else:
+            if r_i % 2 == 0:
+                cella.set_facecolor('#ECEFF1')
+            if c_i == 1:
+                cella._loc = 'left'
+    ax.set_title(f"Coppia di ripetizioni con KL massima ({tag}) — KLsym = {kl:.4f}",
+                 pad=15)
+    fig.text(0.5, 0.04,
+             f"domanda id={riga['id']} — risposta reale: {riga['reale']} — "
+             f"risposte del modello: {', '.join(risposte)} — "
+             f"probabilità rinormalizzate sulle classi considerate",
+             ha='center', fontsize=9, style='italic', color='#546E7A')
+    plt.show()
