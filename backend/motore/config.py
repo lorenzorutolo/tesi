@@ -9,9 +9,12 @@ SEED = 42
 # parafrasi (es. BoolQ): le varianti interrogate sono 1 originale + NUM_PARAFRASI.
 NUM_PARAFRASI = 10
 
-# Endpoint e modello Ollama
+# Endpoint e modello Ollama. MODELLO e' il default, sovrascrivibile a runtime
+# con `run.py --modello <tag>`: lo stesso modello risponde alle domande E
+# genera le parafrasi (decisione del 2026-07-18), con i suoi parametri di
+# sampling di default (temperature/top_p non impostati).
 URL_OLLAMA = "http://localhost:11434/api/generate"
-MODELLO = "llama3"  # aggiungere piu modelli possibili
+MODELLO = "llama3"
 
 # Quanti top token richiedere nei logprobs per stimare la distribuzione
 TOP_LOGPROBS = 20
