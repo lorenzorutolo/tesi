@@ -131,6 +131,51 @@ Ogni elemento è un oggetto con 4 campi spiegati di seguito:
 
 ---
 
+## CSV delle matrici (formato compatto derivato)
+
+Dal CSV completo si può derivare un CSV compatto — **una riga per domanda**, tre colonne — con `backend/estrai_matrici.py`:
+
+```bash
+python backend/estrai_matrici.py risultati_boolq_par.csv   # -> matrici_boolq_par.csv
+```
+
+| Colonna             | Tipo    | Significato                                                                                                   |
+| ------------------- | ------- | -------------------------------------------------------------------------------------------------------------- |
+| `id`                | `int`   | Id della domanda                                                                                                |
+| `matrice`           | `str`   | Matrice delle distribuzioni come lista annidata JSON: una riga interna per ripetizione (originale per prima, poi le varianti nell'ordine del CSV sorgente: 11 per BoolQ, 120 per CommonsenseQA), una colonna interna per classe con `altro` per ultima (BoolQ `true,false,altro`; CommonsenseQA `A,B,C,D,E,altro`) |
+| `colonna_corretta`  | `int`   | Indice **0-based** della colonna della matrice corrispondente alla risposta gold                               |
+
+Esempio (BoolQ, colonne interne `true,false,altro`):
+
+```
+id,matrice,colonna_corretta
+1,"[[1.54692200e-07,9.99995159e-01,4.89459314e-06],[2.03715419e-07,9.99996386e-01,3.40010515e-06],...]",1
+2,"[[9.99743308e-01,2.55966282e-04,7.77698812e-07],[9.59023923e-01,4.09692347e-02,4.87604104e-06],...]",0
+```
+
+Rilettura in analisi (la cella `matrice` è JSON valido):
+
+```python
+df = pd.read_csv("matrici_boolq_par.csv")
+M = np.array(json.loads(df.loc[df["id"] == 1, "matrice"].iloc[0]))   # matrice della domanda 1
+cc = int(df.loc[df["id"] == 1, "colonna_corretta"].iloc[0])
+p_gold = M[:, cc]                                  # prob. della gold per ripetizione
+```
+
+I valori hanno 9 cifre significative (errore relativo ~1e-9, irrilevante per KL/entropia) e, come nel CSV sorgente, **non sono normalizzati**.
+
+**Variante per Excel italiano.** Excel con impostazioni italiane usa `;` come separatore di elenco, quindi il doppio clic sul CSV standard mostra tutto in colonna A. Il flag `--excel` genera una variante già apribile col doppio clic — separatore `;` tra le colonne, suffisso `_excel` nel nome; la cella della matrice resta identica (è testo, non numeri, quindi il punto decimale non disturba Excel e la stringa resta JSON valido):
+
+```bash
+python backend/estrai_matrici.py risultati_boolq_par.csv --excel   # -> matrici_boolq_par_excel.csv
+```
+
+In analisi va letta con `pd.read_csv(..., sep=";")`; per pandas/numpy usare il formato di default.
+
+Il file è una vista derivata e rigenerabile: testi delle parafrasi, `ordine` delle permutazioni e `risposta_pulita` restano solo nel CSV completo (la risposta argmax si ricalcola comunque con `M.argmax(axis=1)`).
+
+---
+
 ## Cosa viene derivato a tempo di analisi
 
 Da queste colonne, `generatore_grafici.py` ricostruisce (in modo **dataset-agnostico**: le classi sono rilevate dalle chiavi di `probabilita`, escluso `altro`):

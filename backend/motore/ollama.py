@@ -8,13 +8,16 @@ from typing import Any
 
 import requests
 
-from .config import MODELLO, TOP_LOGPROBS, URL_OLLAMA
+# Modulo (non nomi singoli): MODELLO puo' essere sovrascritto a runtime da
+# run.py (--modello) e la lettura deve vedere il valore aggiornato.
+from . import config
+from .config import TOP_LOGPROBS, URL_OLLAMA
 
 
 def interroga_ollama(prompt: str, num_predict: int, logprobs: bool = False,
                      seed: int | None = None) -> dict:
     payload: dict[str, Any] = {
-        "model": MODELLO,
+        "model": config.MODELLO,
         "prompt": prompt,
         "stream": False,
         "options": {"num_predict": num_predict},

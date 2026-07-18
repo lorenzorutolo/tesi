@@ -1,5 +1,6 @@
 # Output dei benchmark
-risultati_benchmark.csv
+risultati_commonsenseqa_perm.csv
+risultati_boolq_par.csv
 
 # Claude Code config locale
 .claude/
