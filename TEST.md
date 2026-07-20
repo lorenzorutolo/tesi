@@ -52,3 +52,20 @@ parafrasi (BoolQ), quindi i test senza parafrasi sono riproducibili end-to-end.
 | Codice eseguito | Copia del repo al commit `61490a1` (il motore in questo commit, merge di `4801c61`, è identico: la differenza è solo uno screenshot rimosso) |
 | Riproducibilità | Risposte deterministiche (argmax sui logprobs del primo token, seed fissato); le parafrasi sono riproducibili solo **da server Ollama appena avviato** (condizione documentata in `benchmark.py` e README) — sul cluster è automatica, un'istanza Ollama per job |
 | Verifiche | 3.270 righe (id 1–3270 unici); 11 elementi in `alternative_json` per ogni riga; `alternative[0]` = domanda originale; header a 4 colonne; dal log: backend CUDA su V100, "Salvataggio completato" alla domanda 3270/3270 |
+
+## Test 003 — Campagna parafrasi BoolQ con Llama 3.1
+
+| Campo | Valore |
+|---|---|
+| Risultati | `risultati_boolq_par_llama3.1-8b.csv` (3.270 righe dati, 9,9 MB) |
+| Log | `job_44910.out` (job Slurm **44910** su Thor, partizione `gpu`) |
+| Lancio / fine | 2026-07-18 18:42 → completato (`sacct` COMPLETED, verificato il 2026-07-20) |
+| Comando | `python run.py boolq /out/risultati_boolq_par_llama3.1-8b.csv --modello llama3.1:8b` (in container `benchmark.sif`, orchestrato da `cluster/run_benchmark.sh --nomeModello llama3.1:8b` con `USE_GPU=1`; il tag entra nel nome del CSV sanificato `:`→`-`) |
+| Modello | `llama3.1:8b` (Llama 3.1 8B) via Ollama, backend CUDA — sia risposte sia generazione parafrasi (riga `Modello: llama3.1:8b` nel log) |
+| Hardware | 1× Tesla V100-PCIE-32GB (gnode, driver 575.57.08, CUDA 12.9) |
+| Seed | `SEED = 42` (`backend/motore/config.py`) — fissa shuffle dello split e modulo `random`; parafrasi seedate per chiamata (`SEED*1_000_000 + contatore`, vedi `benchmark.py`) |
+| Dataset | BoolQ, split `validation` completo (3.270 domande) |
+| Copertura | Percorso unico: per ogni domanda 1 originale + `NUM_PARAFRASI = 10` parafrasi indipendenti dell'originale, tutte registrate senza scarti (35.970 risposte + 32.700 generazioni) |
+| Codice eseguito | Il repo su Thor è una copia piatta aggiornata via scp ai file del refactor `bcd2438` (`run.py`, `motore/config.py`, `motore/ollama.py`, script `cluster/`); il motore in questo commit è lo stesso codice |
+| Riproducibilità | Come Test 002: risposte deterministiche (argmax sui logprobs del primo token, seed fissato); parafrasi riproducibili solo da server Ollama appena avviato (automatico sul cluster). Smoke test pre-lancio passato (2 domande, mappatura primo token→classi verificata per llama3.1) |
+| Verifiche | 3.270 righe (id 1–3270 unici); 11 elementi in `alternative_json` per ogni riga; header a 4 colonne; dal log: backend CUDA su V100, `Modello: llama3.1:8b`, "Salvataggio completato" alla domanda 3270/3270; round-trip matrici 11×3 ok (classi `true,false,altro`) |
