@@ -2,6 +2,12 @@
 risultati_commonsenseqa_perm.csv
 risultati_boolq_par.csv
 
+# CSV derivati (light e filtrati): si rigenerano al bisogno, mai in git
+matrici_*.csv
+*_light_*.csv
+*_filtrato.csv
+*_coerenti.csv
+
 # Claude Code config locale
 .claude/
 
