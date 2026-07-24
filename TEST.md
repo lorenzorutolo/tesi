@@ -69,3 +69,20 @@ parafrasi (BoolQ), quindi i test senza parafrasi sono riproducibili end-to-end.
 | Codice eseguito | Il repo su Thor è una copia piatta aggiornata via scp ai file del refactor `bcd2438` (`run.py`, `motore/config.py`, `motore/ollama.py`, script `cluster/`); il motore in questo commit è lo stesso codice |
 | Riproducibilità | Come Test 002: risposte deterministiche (argmax sui logprobs del primo token, seed fissato); parafrasi riproducibili solo da server Ollama appena avviato (automatico sul cluster). Smoke test pre-lancio passato (2 domande, mappatura primo token→classi verificata per llama3.1) |
 | Verifiche | 3.270 righe (id 1–3270 unici); 11 elementi in `alternative_json` per ogni riga; header a 4 colonne; dal log: backend CUDA su V100, `Modello: llama3.1:8b`, "Salvataggio completato" alla domanda 3270/3270; round-trip matrici 11×3 ok (classi `true,false,altro`) |
+
+## Test 004 — Campagna permutazioni esaustiva CommonsenseQA con Llama 3.1
+
+| Campo | Valore |
+|---|---|
+| Risultati | `risultati_commonsenseqa_perm_llama3.1-8b.csv` (1.221 righe dati, 54 MB) |
+| Log | `job_45180.out` (job Slurm **45180** su Thor, partizione `gpu`) |
+| Lancio / fine | 2026-07-21 10:47 → completato (log: "Salvataggio completato" alla domanda 1221/1221; CSV scaricato in locale il 2026-07-24) |
+| Comando | `python run.py commonsenseqa /out/risultati_commonsenseqa_perm_llama3.1-8b.csv --modello llama3.1:8b` (in container `benchmark.sif`, orchestrato da `cluster/run_benchmark.sh --nomeModello llama3.1:8b` con `USE_GPU=1`; il tag entra nel nome del CSV sanificato `:`→`-`) |
+| Modello | `llama3.1:8b` (Llama 3.1 8B) via Ollama, backend CUDA (riga `Modello: llama3.1:8b` nel log) — solo risposte, nessuna generazione di parafrasi |
+| Hardware | 1× Tesla V100-PCIE-32GB (gnode, driver 575.57.08, CUDA 12.9) |
+| Seed | `SEED = 42` (`backend/motore/config.py`) — fissa shuffle dello split e modulo `random` |
+| Dataset | CommonsenseQA, split `validation` completo (1.221 domande, `tau/commonsense_qa`) |
+| Copertura | Modalità esaustiva a percorso unico: tutte le 5! = 120 permutazioni delle opzioni per ogni domanda, tutte registrate senza scarti (146.520 risposte) |
+| Codice eseguito | Il repo su Thor è una copia piatta aggiornata via scp con `cluster/run_benchmark.sh` di questo branch (commit `bcd2438`, campagna commonsenseqa attiva); motore (`run.py`, `motore/`) invariato da `bcd2438`, identico a quello in questo commit |
+| Riproducibilità | Totale in teoria, come Test 001: nessuna parafrasi, varianti enumerate, risposta = argmax deterministico sui logprobs del primo token (unica riserva: non-determinismo floating-point su GPU nei quasi-pareggi). Smoke test pre-lancio SALTATO su scelta dell'utente; verifica manuale dal log che modello e dataset fossero quelli giusti |
+| Verifiche | 1.221 righe (id 1–1221 unici, nessun buco né duplicato); 120 elementi in `alternative_json` per ogni riga; header a 4 colonne; `reale` sempre in A–E; somma delle probabilità ≈ 1 per tutte le 146.520 varianti; dal log: backend CUDA su V100, tutte le 1221/1221 domande elaborate, nessun errore |
