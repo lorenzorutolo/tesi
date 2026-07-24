@@ -21,15 +21,16 @@ Documentazione/
 .DS_Store
 Thumbs.db
 
+# Screenshot usa-e-getta (richieste del relatore, mai in git)
+Screenshot*.png
+image.png
+
 
 # Istruzioni progetto (locali)
 CLAUDE.md
 
 # Hand-off di sessione (locale)
 HANDOFF.md
-
-# Setup esecuzione su cluster Thor (locale)
-cluster/
 
 grafici_output/
 

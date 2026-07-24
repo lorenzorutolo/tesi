@@ -1,0 +1,12 @@
+Bootstrap: docker
+From: ollama/ollama:latest
+
+# Container "server": espone il binario `ollama` e avvia `ollama serve`.
+# I pesi del modello vengono scritti in /models, che va montato (bind) su una
+# cartella scrivibile dell'host (il filesystem del container e' read-only).
+
+%environment
+    export OLLAMA_MODELS=/models
+
+%runscript
+    exec ollama serve
