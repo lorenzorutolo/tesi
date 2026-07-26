@@ -86,3 +86,23 @@ parafrasi (BoolQ), quindi i test senza parafrasi sono riproducibili end-to-end.
 | Codice eseguito | Motore (`run.py`, `motore/`) invariato da `bcd2438`, identico a quello in questo commit. Lo script di lancio `cluster/run_benchmark.sh` all'epoca NON era tracciato in git (`cluster/` in `.gitignore` dal `6213338`): sul cluster è andata via scp la copia locale, con la sola campagna commonsenseqa attiva e selezione modello via `--nomeModello`. `cluster/` è tracciata solo dai commit successivi a questo, con CLI diversa |
 | Riproducibilità | Totale in teoria, come Test 001: nessuna parafrasi, varianti enumerate, risposta = argmax deterministico sui logprobs del primo token (unica riserva: non-determinismo floating-point su GPU nei quasi-pareggi). Smoke test pre-lancio SALTATO su scelta dell'utente; verifica manuale dal log che modello e dataset fossero quelli giusti |
 | Verifiche | 1.221 righe (id 1–1221 unici, nessun buco né duplicato); 120 elementi in `alternative_json` per ogni riga; header a 4 colonne; `reale` sempre in A–E; somma delle probabilità ≈ 1 per tutte le 146.520 varianti; dal log: backend CUDA su V100, tutte le 1221/1221 domande elaborate, nessun errore |
+
+## Test 005 — Campagne BoolQ parafrasi + CommonsenseQA permutazioni con Qwen2.5-14B-Instruct (job unico)
+
+Primo test con la nuova convenzione (dal commit `14207b5`): **1 job = 1 modello =
+entrambe le campagne**, un solo commit con 2 CSV + 1 log + questa scheda.
+
+| Campo | Valore |
+|---|---|
+| Risultati | `risultati_boolq_par_qwen2.5-14b-instruct.csv` (3.270 righe dati, 9,0 MB) e `risultati_commonsenseqa_perm_qwen2.5-14b-instruct.csv` (1.221 righe dati, 54 MB) |
+| Log | `job_45670.out` (job Slurm **45670** su Thor, partizione `gpu`) — unico log per entrambe le campagne, BoolQ prima |
+| Lancio / fine | 2026-07-24 14:46 → completato (log: "Salvataggio completato" per entrambi i CSV; scaricati in locale il 2026-07-26) |
+| Comando | `sbatch sbatch_benchmark.sh --qwen2.5-14b-instruct` → `cluster/run_benchmark.sh` con `USE_GPU=1` esegue in sequenza `python run.py boolq /out/risultati_boolq_par_qwen2.5-14b-instruct.csv --modello qwen2.5:14b-instruct` e `python run.py commonsenseqa /out/risultati_commonsenseqa_perm_qwen2.5-14b-instruct.csv --modello qwen2.5:14b-instruct` (container `benchmark.sif`; alias CLI = tag con `:`→`-`, lo stesso nei nomi CSV) |
+| Modello | `qwen2.5:14b-instruct` (Qwen2.5 14B Instruct) via Ollama, backend CUDA (riga `Modello: qwen2.5:14b-instruct` nel log per entrambe le campagne) — stesso modello per risposte e generazione parafrasi (queste solo per BoolQ) |
+| Hardware | 1× Tesla V100-PCIE-32GB (gnode, driver 575.57.08, CUDA 12.9) |
+| Seed | `SEED = 42` (`backend/motore/config.py`) — fissa shuffle dello split e modulo `random`; parafrasi seedate per chiamata (`SEED*1_000_000 + contatore`, vedi `benchmark.py`) |
+| Dataset | BoolQ, split `validation` completo (3.270 domande) + CommonsenseQA, split `validation` completo (1.221 domande, `tau/commonsense_qa`) |
+| Copertura | Percorso unico, nessuno scarto. BoolQ: 1 originale + `NUM_PARAFRASI = 10` parafrasi indipendenti per domanda (35.970 risposte + 32.700 generazioni). CommonsenseQA: tutte le 5! = 120 permutazioni delle opzioni per domanda (146.520 risposte) |
+| Codice eseguito | Primo test con `cluster/` tracciata in git: script di lancio del commit `14207b5` (scp su Thor il 2026-07-24), motore (`run.py`, `motore/`) invariato da `bcd2438` — entrambi identici al codice in questo commit |
+| Riproducibilità | Come Test 003+004: risposte deterministiche (argmax sui logprobs del primo token, seed fissato); parafrasi BoolQ riproducibili solo da server Ollama appena avviato (automatico sul cluster, un'istanza per job). Smoke test pre-lancio eseguito dall'utente (1 domanda per dataset, sessione interattiva su nodo GPU; non compare in questo log) |
+| Verifiche | BoolQ: 3.270 righe (id 1–3270 completi e unici), 11 elementi in `alternative_json` per riga. CommonsenseQA: 1.221 righe (id 1–1221 completi e unici), 120 elementi per riga. Header a 4 colonne su entrambi; somma probabilità per variante in [0,999982; 1,000000] su tutte le 182.490 varianti; dal log: `library=CUDA` su V100, 3270/3270 e 1221/1221 domande elaborate, "Salvataggio completato" ×2, nessun errore né traceback |
