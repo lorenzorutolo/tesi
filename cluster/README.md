@@ -72,9 +72,10 @@ scp "lorenzo.rutolo@thor:~/scratch/benchmark-thor/out/risultati_*_<tag>.csv" .
 scp "lorenzo.rutolo@thor:~/scratch/benchmark-thor/repo/cluster/job_<id>.out" .
 ```
 
-`<tag>` = modello con `:` -> `-` (es. `qwen2.5-14b-instruct`); le virgolette
-servono perche' l'asterisco deve espanderlo il server, non PowerShell.
-Scarica SUBITO: lo scratch e' volatile.
+`<tag>` = alias del modello senza `--` (es. `qwen2.5-14b-instruct`,
+`gemma2-9b-instruct`): e' il suffisso che `run_benchmark.sh` mette nei nomi
+dei CSV; le virgolette servono perche' l'asterisco deve espanderlo il server,
+non PowerShell. Scarica SUBITO: lo scratch e' volatile.
 
 ## Layout in scratch
 
@@ -126,10 +127,13 @@ cd ~/scratch/benchmark-thor/repo/cluster
 sbatch sbatch_benchmark.sh --qwen2.5-14b-instruct   # -> "Submitted batch job <id>"
 ```
 
-Il modello e' obbligatorio e si sceglie con un flag-alias (elenco completo in
-testa a `run_benchmark.sh`, oppure `--nomeModello TAG` per un tag arbitrario).
-Ogni job esegue **entrambi** i dataset: BoolQ a parafrasi, poi CommonsenseQA
-a permutazioni.
+Il modello e' obbligatorio e si sceglie con un flag-alias descrittivo (elenco
+completo in testa a `run_benchmark.sh`, oppure `--nomeModello TAG` per un tag
+arbitrario). Nota: l'alias non coincide sempre col tag Ollama — per Gemma i
+tag `*-instruct`/`*-it` non esistono e lo script mappa gli alias sui tag di
+default (`gemma2:9b`, `gemma3:12b`), che sono gia' le varianti
+instruction-tuned (i base hanno suffisso `-text`). Ogni job esegue
+**entrambi** i dataset: BoolQ a parafrasi, poi CommonsenseQA a permutazioni.
 
 Il wrapper richiede 1 GPU (V100/A100), imposta `USE_GPU=1` (flag `--nv` di Apptainer)
 e il percorso scratch reale, poi delega a `run_benchmark.sh`. Niente tmux: il job vive

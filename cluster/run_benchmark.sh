@@ -5,15 +5,19 @@
 #
 # Uso:
 #   bash run_benchmark.sh --<modello>
-# Il modello e' OBBLIGATORIO e si sceglie con un flag-alias (= tag Ollama con
-# ':' -> '-', lo stesso che entra nei nomi dei CSV di output); stesso modello
-# per risposte e parafrasi:
+# Il modello e' OBBLIGATORIO e si sceglie con un flag-alias DESCRITTIVO (nome
+# completo del modello, lo stesso che entra nei nomi dei CSV di output);
+# stesso modello per risposte e parafrasi. L'alias NON coincide sempre col tag
+# Ollama: per Gemma i tag "*-instruct"/"*-it" NON esistono nella libreria
+# Ollama — il tag di default e' GIA' la variante instruction-tuned (i base
+# hanno suffisso "-text"). Verificato su ollama.com il 2026-07-26.
 #   --llama3                -> llama3
 #   --llama3.1-8b           -> llama3.1:8b
 #   --qwen2.5-14b-instruct  -> qwen2.5:14b-instruct
-#   --gemma2-9b-instruct    -> gemma2:9b-instruct
-#   --gemma3-12b-it         -> gemma3:12b-it
-# Per un tag non in tabella: --nomeModello TAG (es. --nomeModello mistral:7b).
+#   --gemma2-9b-instruct    -> gemma2:9b
+#   --gemma3-12b-it         -> gemma3:12b
+# Per un tag non in tabella: --nomeModello TAG (es. --nomeModello mistral:7b);
+# in quel caso il suffisso CSV e' il tag con ':' e '/' -> '-'.
 # Variabili opzionali:
 #   BASE=...     cartella di lavoro in scratch (default: scratch reale dell'utente)
 #   REPO=...     copia del repo            (default: $BASE/repo)
@@ -29,6 +33,7 @@ BASE="${BASE:-/mnt/beegfs/scratch/$USER/benchmark-thor}"
 REPO="${REPO:-$BASE/repo}"
 INSTANCE=ollama
 MODELLO=""
+TAG_FILE=""
 
 uso() {
   echo "Uso: bash run_benchmark.sh --<modello>"
@@ -36,18 +41,21 @@ uso() {
   echo "  --llama3                -> llama3"
   echo "  --llama3.1-8b           -> llama3.1:8b"
   echo "  --qwen2.5-14b-instruct  -> qwen2.5:14b-instruct"
-  echo "  --gemma2-9b-instruct    -> gemma2:9b-instruct"
-  echo "  --gemma3-12b-it         -> gemma3:12b-it"
+  echo "  --gemma2-9b-instruct    -> gemma2:9b"
+  echo "  --gemma3-12b-it         -> gemma3:12b"
   echo "Tag arbitrario: --nomeModello TAG (es. --nomeModello mistral:7b)"
 }
 
+# Per ogni alias si fissano sia il tag Ollama sia il suffisso dei CSV: per
+# Gemma i due differiscono (il tag "9b-instruct"/"12b-it" non esiste, ma nel
+# nome file si tiene l'alias descrittivo, coerente col nome del modello).
 while [ $# -gt 0 ]; do
   case "$1" in
-    --llama3)                MODELLO=llama3;               shift ;;
-    --llama3.1-8b)           MODELLO=llama3.1:8b;          shift ;;
-    --qwen2.5-14b-instruct)  MODELLO=qwen2.5:14b-instruct; shift ;;
-    --gemma2-9b-instruct)    MODELLO=gemma2:9b-instruct;   shift ;;
-    --gemma3-12b-it)         MODELLO=gemma3:12b-it;        shift ;;
+    --llama3)                MODELLO=llama3;               TAG_FILE=llama3;               shift ;;
+    --llama3.1-8b)           MODELLO=llama3.1:8b;          TAG_FILE=llama3.1-8b;          shift ;;
+    --qwen2.5-14b-instruct)  MODELLO=qwen2.5:14b-instruct; TAG_FILE=qwen2.5-14b-instruct; shift ;;
+    --gemma2-9b-instruct)    MODELLO=gemma2:9b;            TAG_FILE=gemma2-9b-instruct;   shift ;;
+    --gemma3-12b-it)         MODELLO=gemma3:12b;           TAG_FILE=gemma3-12b-it;        shift ;;
     --nomeModello)
       [ $# -ge 2 ] || { echo "Uso: --nomeModello TAG (es. --nomeModello llama3.1:8b)"; exit 1; }
       MODELLO="$2"; shift 2 ;;
@@ -60,9 +68,12 @@ done
 # aver lanciato la campagna col modello sbagliato.
 [ -n "$MODELLO" ] || { echo "Nessun modello indicato."; uso; exit 1; }
 
-# Suffisso per i nomi dei CSV: il tag Ollama contiene ':' (e a volte '/'),
+# Suffisso per i nomi dei CSV quando il modello arriva da --nomeModello (gli
+# alias lo fissano gia'): il tag Ollama contiene ':' (e a volte '/'),
 # caratteri scomodi nei nomi di file.
-TAG_FILE=$(echo "$MODELLO" | tr ':/' '--')
+[ -n "$TAG_FILE" ] || TAG_FILE=$(echo "$MODELLO" | tr ':/' '--')
+
+echo ">> Modello: $MODELLO (suffisso CSV: $TAG_FILE)"
 
 NV_FLAG=""
 [ "${USE_GPU:-0}" = "1" ] && NV_FLAG="--nv"
