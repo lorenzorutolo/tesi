@@ -13,6 +13,69 @@ condivide la rete dell'host, quindi `localhost` e' lo stesso per entrambi i cont
 > senza preavviso). Tieni `.sif`, modelli, cache e CSV **dentro `~/scratch`** e **copia via i CSV**
 > appena pronti. Non e' un fileserver.
 
+## Cheat sheet — ciclo completo di una campagna (comandi pronti)
+
+Host: `lorenzo.rutolo@thor`. I comandi `scp`/`ssh` si lanciano dal terminale
+LOCALE (PowerShell, dalla root del repo); quelli `sbatch`/`squeue` da dentro
+il cluster (hnode01).
+
+### 1. Carica gli script aggiornati sul cluster (locale)
+
+```powershell
+scp cluster/run_benchmark.sh cluster/sbatch_benchmark.sh lorenzo.rutolo@thor:~/scratch/benchmark-thor/repo/cluster/
+```
+
+(Serve solo se gli script sono cambiati dall'ultima campagna.)
+
+### 2. Lancia il job (dentro il cluster)
+
+```bash
+ssh lorenzo.rutolo@thor
+cd ~/scratch/benchmark-thor/repo/cluster
+sbatch sbatch_benchmark.sh --<modello>     # es. --qwen2.5-14b-instruct
+# -> "Submitted batch job <id>": segnati l'id, serve per log e download
+```
+
+Smoke test prima del job lungo (consigliato per un modello mai provato):
+vedi la sezione "Test rapido prima del job lungo" piu' sotto.
+
+### 3. Controlla a che punto e' (locale, senza entrare nel cluster)
+
+```powershell
+# stato del job: PD = in coda, R = in esecuzione, niente = finito
+ssh lorenzo.rutolo@thor "squeue -u lorenzo.rutolo"
+
+# a che domanda e' arrivato (es. "Elaborazione Domanda 812/3270";
+# prima campagna = /3270 boolq, seconda = /1221 commonsenseqa)
+ssh lorenzo.rutolo@thor "grep 'Elaborazione Domanda' ~/scratch/benchmark-thor/repo/cluster/job_<id>.out | tail -1"
+
+# ultime righe del log (per errori o "Salvataggio completato")
+ssh lorenzo.rutolo@thor "tail -30 ~/scratch/benchmark-thor/repo/cluster/job_<id>.out"
+```
+
+Da dentro il cluster (dopo `ssh`) il log live si segue con:
+
+```bash
+tail -f ~/scratch/benchmark-thor/repo/cluster/job_<id>.out    # Ctrl+C per uscire
+```
+
+Percorso COMPLETO obbligatorio: appena entri sei in `~`, ma Slurm scrive il
+log nella cartella da cui hai fatto `sbatch`. Se il file non c'e': o il job
+e' ancora in coda (`squeue -u $USER`, stato PD), o il percorso e' un altro —
+`scontrol show job <id> | grep StdOut` stampa quello vero. Nota: `tail` non
+esiste in PowerShell, da locale va sempre avvolto in `ssh "..."`.
+
+### 4. Scarica i risultati a fine job (locale, dalla root del repo)
+
+```powershell
+scp "lorenzo.rutolo@thor:~/scratch/benchmark-thor/out/risultati_*_<tag>.csv" .
+scp "lorenzo.rutolo@thor:~/scratch/benchmark-thor/repo/cluster/job_<id>.out" .
+```
+
+`<tag>` = modello con `:` -> `-` (es. `qwen2.5-14b-instruct`); le virgolette
+servono perche' l'asterisco deve espanderlo il server, non PowerShell.
+Scarica SUBITO: lo scratch e' volatile.
+
 ## Layout in scratch
 
 Percorso canonico: **`/mnt/beegfs/scratch/<nome.cognome>/benchmark-thor/`** (il percorso
