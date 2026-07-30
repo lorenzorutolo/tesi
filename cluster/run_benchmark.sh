@@ -135,7 +135,8 @@ run_one() {
 
 # Ogni run copre ENTRAMBE le campagne del modello, la corta per prima:
 # - BoolQ a parafrasi: split validation completo (3270 domande) x (1 originale
-#   + 10 parafrasi generate dal modello stesso);
+#   + NUM_PARAFRASI parafrasi generate dal modello stesso; 30 dal Test 007,
+#   era 10 fino al Test 006 — si cambia in backend/motore/config.py);
 # - CommonsenseQA a permutazioni: split validation completo (1221 domande) x
 #   120 permutazioni esaustive delle opzioni.
 # Percorso unico, tutte le varianti accettate, nessuno scarto (dal Test 002).

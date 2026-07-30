@@ -7,7 +7,9 @@
 SEED = 42
 # Quante parafrasi generare per ogni domanda nei dataset perturbati via
 # parafrasi (es. BoolQ): le varianti interrogate sono 1 originale + NUM_PARAFRASI.
-NUM_PARAFRASI = 10
+# Portato da 10 a 30 dal Test 007 (gemma3:12b) per avere piu' ripetizioni
+# sul descrittore; le campagne 001-006 sono state eseguite con 10.
+NUM_PARAFRASI = 30
 
 # Endpoint e modello Ollama. MODELLO e' il default, sovrascrivibile a runtime
 # con `run.py --modello <tag>`: lo stesso modello risponde alle domande E
