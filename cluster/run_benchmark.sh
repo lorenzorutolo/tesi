@@ -23,6 +23,8 @@
 #   REPO=...     copia del repo            (default: $BASE/repo)
 #   USE_GPU=1    aggiunge --nv (nodi con GPU NVIDIA)
 #   SMOKE=1      smoke test: 1 domanda per dataset su CSV separati
+#   DATASET=...  quale campagna eseguire: boolq | commonsenseqa | entrambi
+#                (default: entrambi)
 set -euo pipefail
 
 # --- Config -------------------------------------------------------------------
@@ -73,7 +75,15 @@ done
 # caratteri scomodi nei nomi di file.
 [ -n "$TAG_FILE" ] || TAG_FILE=$(echo "$MODELLO" | tr ':/' '--')
 
-echo ">> Modello: $MODELLO (suffisso CSV: $TAG_FILE)"
+# Validazione qui e non nella sezione benchmark: fail-fast, un valore errato
+# non deve emergere solo dopo l'avvio del server e il pull del modello.
+DATASET="${DATASET:-entrambi}"
+case "$DATASET" in
+  boolq|commonsenseqa|entrambi) ;;
+  *) echo "DATASET non valido: $DATASET (ammessi: boolq, commonsenseqa, entrambi)"; exit 1 ;;
+esac
+
+echo ">> Modello: $MODELLO (suffisso CSV: $TAG_FILE, campagne: $DATASET)"
 
 NV_FLAG=""
 [ "${USE_GPU:-0}" = "1" ] && NV_FLAG="--nv"
@@ -133,7 +143,11 @@ run_one() {
     python run.py "$dataset" "/out/$out_csv" --modello "$MODELLO" "$@"
 }
 
-# Ogni run copre ENTRAMBE le campagne del modello, la corta per prima:
+# Di default ogni run copre ENTRAMBE le campagne del modello, la corta per
+# prima; con DATASET=boolq o DATASET=commonsenseqa se ne esegue una sola
+# (serve quando una campagna e' gia' valida: es. rifare solo BoolQ a 30
+# parafrasi con gemma2:9b senza ripetere CommonsenseQA, gia' coperto dal
+# Test 006 — richiesta del relatore del 2026-07-30).
 # - BoolQ a parafrasi: split validation completo (3270 domande) x (1 originale
 #   + NUM_PARAFRASI parafrasi generate dal modello stesso; 30 dal Test 007,
 #   era 10 fino al Test 006 — si cambia in backend/motore/config.py);
@@ -143,12 +157,22 @@ run_one() {
 #
 # Smoke test (1 domanda per dataset, CSV separati):
 #   SMOKE=1 bash run_benchmark.sh --<modello>
+# Niente forma breve `[ ... ] && run_one`: con `set -e` un test falso a fine
+# blocco farebbe morire lo script.
 if [ "${SMOKE:-0}" = "1" ]; then
-  run_one boolq          "smoke_boolq_par_${TAG_FILE}.csv"           --num 1
-  run_one commonsenseqa  "smoke_commonsenseqa_perm_${TAG_FILE}.csv"  --num 1
+  if [ "$DATASET" != "commonsenseqa" ]; then
+    run_one boolq          "smoke_boolq_par_${TAG_FILE}.csv"           --num 1
+  fi
+  if [ "$DATASET" != "boolq" ]; then
+    run_one commonsenseqa  "smoke_commonsenseqa_perm_${TAG_FILE}.csv"  --num 1
+  fi
 else
-  run_one boolq          "risultati_boolq_par_${TAG_FILE}.csv"
-  run_one commonsenseqa  "risultati_commonsenseqa_perm_${TAG_FILE}.csv"
+  if [ "$DATASET" != "commonsenseqa" ]; then
+    run_one boolq          "risultati_boolq_par_${TAG_FILE}.csv"
+  fi
+  if [ "$DATASET" != "boolq" ]; then
+    run_one commonsenseqa  "risultati_commonsenseqa_perm_${TAG_FILE}.csv"
+  fi
 fi
 
 echo

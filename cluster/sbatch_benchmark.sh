@@ -6,7 +6,10 @@
 # es.:
 #   sbatch sbatch_benchmark.sh --qwen2.5-14b-instruct
 # (alias modello e tag disponibili: vedi run_benchmark.sh, a cui gli
-# argomenti passano intatti; ogni job esegue ENTRAMBI i dataset)
+# argomenti passano intatti; di default ogni job esegue ENTRAMBI i dataset,
+# per una sola campagna: DATASET=boolq sbatch sbatch_benchmark.sh --<modello>
+# — sbatch esporta l'ambiente del chiamante, quindi la variabile arriva
+# a run_benchmark.sh)
 #
 # Monitoraggio:
 #   squeue -u $USER                  # PD = in coda, R = in esecuzione
