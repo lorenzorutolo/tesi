@@ -109,6 +109,11 @@ entrambe le campagne**, un solo commit con 2 CSV + 1 log + questa scheda.
 
 ## Test 006 — Campagne BoolQ parafrasi + CommonsenseQA permutazioni con Gemma-2-9B (job unico)
 
+> **NB (2026-08-02):** la campagna BoolQ di questo test (10 parafrasi) è
+> **superata dal Test 007** (30 parafrasi): i risultati BoolQ@10 non vanno più
+> usati in analisi. Il CommonsenseQA resta valido (non dipende da
+> `NUM_PARAFRASI`).
+
 Primo test dopo il fix dei tag Gemma (`6efa4a6`): l'alias CLI descrittivo
 `--gemma2-9b-instruct` mappa sul tag Ollama reale `gemma2:9b` (su Ollama i tag
 di default sono già le varianti instruction-tuned; `gemma2:9b-instruct` non
@@ -128,3 +133,27 @@ esiste). L'alias fissa anche il suffisso dei CSV. Prima campagna su A100.
 | Codice eseguito | Script di lancio del commit `6efa4a6` (fix alias→tag Gemma, scp su Thor il 2026-07-26 prima del lancio), motore (`run.py`, `motore/`) invariato da `bcd2438` — entrambi identici al codice in questo commit |
 | Riproducibilità | Come Test 005: risposte deterministiche (argmax sui logprobs del primo token, seed fissato); parafrasi BoolQ riproducibili solo da server Ollama appena avviato (automatico sul cluster, un'istanza per job). Smoke test pre-lancio eseguito dall'utente (tokenizer Gemma incluso, sessione interattiva su nodo GPU; non compare in questo log) |
 | Verifiche | BoolQ: 3.270 righe (id 1–3270 completi e unici), 11 elementi in `alternative_json` per riga, somma probabilità per variante in [0,971990; 1,000000]. CommonsenseQA: 1.221 righe (id 1–1221 completi e unici), 120 elementi per riga, somma in [0,885866; 0,999959] (182.490 varianti totali). Header a 4 colonne su entrambi; dal log: `library=CUDA` su A100, 3270/3270 e 1221/1221 domande elaborate, "Salvataggio completato" ×2, nessun errore né traceback (grep con word boundary: "error" matcha "terror" nelle domande) |
+
+## Test 007 — Campagna BoolQ parafrasi a 30 ripetizioni con Gemma-2-9B
+
+Rifacimento del solo BoolQ del Test 006 con `NUM_PARAFRASI = 30` (decisione
+del relatore del 2026-07-30, cfr. commit `f90da8b`): **sostituisce il BoolQ@10
+del Test 006**, che da qui in poi è deprecato. Prima campagna lanciata con la
+variabile `DATASET` di `run_benchmark.sh` (commit `ce6eaaa`) per eseguire un
+solo dataset. Il CSV ha lo stesso nome di quello del Test 006 (stesso alias
+modello): la versione a 10 parafrasi resta solo nella history.
+
+| Campo | Valore |
+|---|---|
+| Risultati | `risultati_boolq_par_gemma2-9b-instruct.csv` (3.270 righe dati, 25,2 MB) |
+| Log | `job_46476.out` (job Slurm **46476** su Thor, partizione `gpu`) — sola campagna BoolQ. Il primo lancio (job **46475**) è stato cancellato prima di produrre risultati: sul cluster era finita una copia corrotta di `sbatch_benchmark.sh` senza direttive `#SBATCH` (sintomo: log `slurm-<id>.out` invece di `job_<id>.out`); wrapper ripristinato da git e ricaricato via scp prima del rilancio |
+| Lancio / fine | 2026-07-31 14:32 → completato (log: "Salvataggio completato"; CSV e log scaricati in locale il 2026-08-02) |
+| Comando | `DATASET=boolq sbatch sbatch_benchmark.sh --gemma2-9b-instruct` → `cluster/run_benchmark.sh` con `USE_GPU=1` esegue solo `python run.py boolq /out/risultati_boolq_par_gemma2-9b-instruct.csv --modello gemma2:9b` (container `benchmark.sif`; alias CLI ≠ tag: riga `Modello: gemma2:9b (suffisso CSV: gemma2-9b-instruct, campagne: boolq)` nel log) |
+| Modello | `gemma2:9b` (Gemma 2 9B, variante instruction-tuned di default su Ollama) via Ollama, backend CUDA — stesso modello per risposte e generazione parafrasi |
+| Hardware | 1× NVIDIA A100 80GB PCIe (gnode, CUDA 12.9) |
+| Seed | `SEED = 42` (`backend/motore/config.py`) — fissa shuffle dello split e modulo `random`; parafrasi seedate per chiamata (`SEED*1_000_000 + contatore`, vedi `benchmark.py`) |
+| Dataset | BoolQ, split `validation` completo (3.270 domande). CommonsenseQA NON rieseguito: vale quello del Test 006 (le permutazioni non dipendono da `NUM_PARAFRASI`) |
+| Copertura | Percorso unico, nessuno scarto: per ogni domanda 1 originale + `NUM_PARAFRASI = 30` parafrasi indipendenti (101.370 risposte + 98.100 generazioni, ~3× il BoolQ del Test 006) |
+| Codice eseguito | Script di lancio del commit `ce6eaaa` (variabile `DATASET`, scp su Thor il 2026-07-31), motore invariato da `bcd2438` salvo `NUM_PARAFRASI = 30` in `config.py` (commit `f90da8b`) — identici al codice in questo commit |
+| Riproducibilità | Come Test 006: risposte deterministiche (argmax sui logprobs del primo token, seed fissato); parafrasi riproducibili solo da server Ollama appena avviato (automatico sul cluster, un'istanza per job). Smoke test non ripetuto: stessa configurazione del Test 006 già validata (cambia solo `NUM_PARAFRASI`) |
+| Verifiche | 3.270 righe (id 1–3270 completi e unici); **31** elementi in `alternative_json` per ogni riga; header a 4 colonne; somma probabilità per variante in [0,971990; 1,000000] su tutte le 101.370 varianti; 0 risposte vuote; chiavi `true/false/altro`; dal log: `library=CUDA` su A100 80GB, "Salvataggio completato", mappatura alias→tag corretta |
