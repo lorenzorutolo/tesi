@@ -678,19 +678,24 @@ def raccogli_entropia(res, livello, includi_altro):
 def descrittori_per_domanda(res, includi_altro):
     """I 9 descrittori per domanda richiesti dal relatore, piu' gli esiti.
 
+    Nomi secondo le convenzioni della letteratura (tra parentesi il nome
+    "storico" usato finora): Hpmean = entropia della distribuzione media,
+    Hmean = media delle entropie delle ripetizioni, Jensen = divergenza di
+    Jensen-Shannon (= Hpmean - Hmean), KLmax = max KL simmetrica sulle coppie.
+
     Le righe con meno di 2 ripetizioni sono escluse (il max KL richiede almeno
     una coppia), cosi' tutti i descrittori restano allineati sulle stesse domande.
     """
     descr = {
-        "[1] Entropia della media": [],
-        "[2] Media delle entropie": [],
-        "[3] Massima entropia": [],
-        "[4] Minima entropia": [],
-        "[5] Max KL": [],
-        "[6] Entropia della media - Media delle entropie": [],
-        "[7] Massima - Minima entropia": [],
-        "[8] Massima entropia - Max KL": [],
-        "[9] Minima entropia - Max KL": [],
+        "[1] Hpmean (entropia della media)": [],
+        "[2] Hmean (media delle entropie)": [],
+        "[3] Hmax (massima entropia)": [],
+        "[4] Hmin (minima entropia)": [],
+        "[5] KLmax (max KL)": [],
+        "[6] Jensen (entropia della media - media delle entropie)": [],
+        "[7] Hmax - Hmin (massima - minima entropia)": [],
+        "[8] Hmax - KLmax (massima entropia - max KL)": [],
+        "[9] Hmin - KLmax (minima entropia - max KL)": [],
     }
     esiti = []
     for riga in res.risultati_per_tabella:
@@ -706,15 +711,15 @@ def descrittori_per_domanda(res, includi_altro):
         min_ent = min(ents)
         max_kl = max(kl_simmetrica(alts[i], alts[j], res.classi, includi_altro)
                      for i in range(len(alts)) for j in range(i + 1, len(alts)))
-        descr["[1] Entropia della media"].append(ent_media)
-        descr["[2] Media delle entropie"].append(media_ent)
-        descr["[3] Massima entropia"].append(max_ent)
-        descr["[4] Minima entropia"].append(min_ent)
-        descr["[5] Max KL"].append(max_kl)
-        descr["[6] Entropia della media - Media delle entropie"].append(ent_media - media_ent)
-        descr["[7] Massima - Minima entropia"].append(max_ent - min_ent)
-        descr["[8] Massima entropia - Max KL"].append(max_ent - max_kl)
-        descr["[9] Minima entropia - Max KL"].append(min_ent - max_kl)
+        descr["[1] Hpmean (entropia della media)"].append(ent_media)
+        descr["[2] Hmean (media delle entropie)"].append(media_ent)
+        descr["[3] Hmax (massima entropia)"].append(max_ent)
+        descr["[4] Hmin (minima entropia)"].append(min_ent)
+        descr["[5] KLmax (max KL)"].append(max_kl)
+        descr["[6] Jensen (entropia della media - media delle entropie)"].append(ent_media - media_ent)
+        descr["[7] Hmax - Hmin (massima - minima entropia)"].append(max_ent - min_ent)
+        descr["[8] Hmax - KLmax (massima entropia - max KL)"].append(max_ent - max_kl)
+        descr["[9] Hmin - KLmax (minima entropia - max KL)"].append(min_ent - max_kl)
         esiti.append(riga["corretta"])
     return descr, esiti
 
@@ -1020,3 +1025,145 @@ for includi_altro in (False, True):
              f"probabilità rinormalizzate sulle classi considerate",
              ha='center', fontsize=9, style='italic', color='#546E7A')
     plt.show()
+
+"""[15] Curva accuracy-rejection: accuratezza vs frazione di domande tenute
+
+Richiesta del relatore (2026-07-21): se una misura di incertezza M e'
+informativa, le risposte con M alta tendono a essere sbagliate. Si ordinano
+quindi le domande per M crescente e si calcola l'accuratezza sul primo x%
+(le piu' "sicure"): X = frazione del dataset tenuta, Y = accuratezza sulle
+domande tenute. Al diminuire di x l'accuratezza dovrebbe salire.
+Una figura per regime (senza / con "altro") con le curve dei 9 descrittori
+della sezione [13]; esito = maggioranza.
+"""
+
+GRUPPO = "Accuracy-rejection"
+
+FRAZIONI_TENUTE = np.linspace(0.05, 1.0, 20)
+
+# Cache dei descrittori per regime: riusata dalla sezione [16] per evitare di
+# ricalcolare le KL su tutte le coppie (costose sulle 120 permutazioni).
+descrittori_cache = {}
+
+
+def accuratezza_cumulativa(esiti_ordinati):
+    """Accuratezza sul primo x% di ``esiti_ordinati``, per x in FRAZIONI_TENUTE."""
+    cumulate = np.cumsum(esiti_ordinati)
+    acc = []
+    for f in FRAZIONI_TENUTE:
+        n = max(1, int(round(f * len(esiti_ordinati))))
+        acc.append(cumulate[n - 1] / n)
+    return acc
+
+
+for includi_altro in (False, True):
+    n_cls = K + (1 if includi_altro else 0)
+    tag = f"{'con' if includi_altro else 'senza'} altro, {n_cls} classi"
+    descr, esiti = descrittori_per_domanda(res, includi_altro)
+    if len(esiti) < 2:
+        print(f"⚠️ Dati insufficienti per la curva accuracy-rejection ({tag}).")
+        continue
+    descrittori_cache[includi_altro] = (descr, esiti)
+    esiti_num = np.asarray(esiti, dtype=float)
+
+    fig, ax = plt.subplots(figsize=(10, 6), dpi=100)
+    colori = plt.get_cmap('tab10')
+    for k, (nome, valori) in enumerate(descr.items()):
+        ordine = np.argsort(valori, kind="stable")
+        ax.plot(FRAZIONI_TENUTE, accuratezza_cumulativa(esiti_num[ordine]),
+                color=colori(k % 10), linewidth=1.6, label=nome)
+    ax.set_title(f"Accuracy-rejection — accuratezza vs frazione tenuta ({tag})",
+                 pad=15)
+    ax.set_xlabel("Frazione del dataset tenuta (dal descrittore più basso)")
+    ax.set_ylabel("Accuratezza (risposta di maggioranza)")
+    ax.grid(linestyle='--', alpha=0.7)
+    ax.legend(fontsize=8, loc='upper left', bbox_to_anchor=(1.01, 1),
+              title="ordinamento per", title_fontsize=9)
+    plt.tight_layout()
+    plt.show()
+    print(f"  Accuracy-rejection ({tag}): n={len(esiti_num)} domande, "
+          f"accuratezza globale {esiti_num.mean():.4f}")
+
+"""[16] Accuracy-rejection dei 4 descrittori del paper (UQ Bayesiana vs Credale)
+
+Dal paper del relatore (sez. "Bayesian and Credal UQ", che segue Hofman 2024):
+il credal set e' l'insieme delle distribuzioni delle ripetizioni e i quattro
+descrittori sono un sottoinsieme dei 9 della sezione [13]:
+    AU_B = media delle entropie             = [2] Hmean
+    EU_B = H(distribuzione media) - AU_B    = [6] Jensen
+    AU_C = massima entropia                 = [3] Hmax
+    EU_C = max KL simmetrica sulle coppie   = [5] KLmax
+Una figura per regime (senza / con "altro"); il regime "con altro" e' quello
+allineato al paper, dove la PMF include lo stato residuo. Convenzione grafica
+del paper: X = frazione di domande rifiutate (dalla piu' incerta), Y =
+accuratezza sulle domande tenute; blu = Bayesiano, arancio = Credale, linea
+piena = AU, tratteggiata = EU; banda grigia = baseline casuale (media +/- 1
+dev. std su piu' ordinamenti casuali).
+"""
+
+GRUPPO = "Accuracy-rejection (paper)"
+
+FRAZIONI_RIFIUTATE = np.linspace(0.0, 0.95, 20)
+N_ORDINAMENTI_CASUALI = 200
+
+DESCRITTORI_PAPER = [
+    ("$AU_B$", "[2] Hmean (media delle entropie)", "#1f77b4", "solid"),
+    ("$EU_B$", "[6] Jensen (entropia della media - media delle entropie)", "#1f77b4", "dotted"),
+    ("$AU_C$", "[3] Hmax (massima entropia)", "#ff7f0e", "solid"),
+    ("$EU_C$", "[5] KLmax (max KL)", "#ff7f0e", "dotted"),
+]
+
+
+def accuratezza_su_tenute(esiti_ordinati):
+    """Accuratezza sulle domande tenute, per ogni frazione rifiutata.
+
+    ``esiti_ordinati`` va dal descrittore piu' basso (tenuto per primo) al
+    piu' alto (rifiutato per primo); esiti codificati 1=corretta, 0=errata.
+    """
+    cumulate = np.cumsum(esiti_ordinati)
+    acc = []
+    for f in FRAZIONI_RIFIUTATE:
+        n = max(1, int(round((1 - f) * len(esiti_ordinati))))
+        acc.append(cumulate[n - 1] / n)
+    return np.asarray(acc)
+
+
+for includi_altro in (False, True):
+    if includi_altro not in descrittori_cache:
+        continue
+    n_cls = K + (1 if includi_altro else 0)
+    tag = f"{'con' if includi_altro else 'senza'} altro, {n_cls} classi"
+    descr, esiti = descrittori_cache[includi_altro]
+    esiti_num = np.asarray(esiti, dtype=float)
+
+    fig, ax = plt.subplots(figsize=(8, 6), dpi=100)
+
+    # Baseline casuale: media +/- 1 dev. std su N ordinamenti casuali (seed
+    # fisso per riproducibilita'), come la banda grigia del paper.
+    rng = np.random.default_rng(42)
+    curve_casuali = np.asarray([
+        accuratezza_su_tenute(rng.permutation(esiti_num))
+        for _ in range(N_ORDINAMENTI_CASUALI)])
+    media_rnd = curve_casuali.mean(axis=0)
+    std_rnd = curve_casuali.std(axis=0)
+    ax.fill_between(FRAZIONI_RIFIUTATE, media_rnd - std_rnd, media_rnd + std_rnd,
+                    color='black', alpha=0.25, linewidth=0)
+    ax.plot(FRAZIONI_RIFIUTATE, media_rnd, color='black', linewidth=1.6,
+            label='casuale')
+
+    for etichetta, chiave, colore, stile in DESCRITTORI_PAPER:
+        ordine = np.argsort(descr[chiave], kind="stable")
+        ax.plot(FRAZIONI_RIFIUTATE, accuratezza_su_tenute(esiti_num[ordine]),
+                color=colore, linestyle=stile, linewidth=1.8, label=etichetta)
+
+    ax.set_title("Accuracy-rejection — descrittori del paper "
+                 f"$AU_B$, $EU_B$, $AU_C$, $EU_C$ ({tag})", pad=15)
+    ax.set_xlabel("Frazione di domande rifiutate (dal descrittore più alto)")
+    ax.set_ylabel("Accuratezza sulle domande tenute (maggioranza)")
+    ax.set_xlim(0, 0.95)
+    ax.grid(linestyle='--', alpha=0.7)
+    ax.legend(loc='upper left', fontsize=10)
+    plt.tight_layout()
+    plt.show()
+    print(f"  Accuracy-rejection paper ({tag}): n={len(esiti_num)} domande, "
+          f"accuratezza globale {esiti_num.mean():.4f}")

@@ -2,8 +2,11 @@ import { useState } from 'react'
 
 const API_URL = '/api/interroga'
 
-// Calcola la "distribuzione media" sulle alternative (originale + ripetizioni),
-// coerente con avg_ent di generatore_grafici.py: ogni variante viene prima
+// Limite lato client, allineato a MAX_RIPETIZIONI_LIVE del backend.
+const MAX_RIPETIZIONI = 30
+
+// Calcola la "distribuzione media" dell'ensemble (originale + parafrasi),
+// coerente con avg_ent di generatore_grafici.py: ogni ripetizione viene prima
 // normalizzata per conto suo (massa -> distribuzione), poi si fa la media
 // aritmetica. Cosi' ogni ripetizione pesa uguale, indipendentemente dalla massa
 // top-K. ``alternative`` arriva gia' come array di oggetti dall'endpoint.
@@ -20,7 +23,7 @@ function calcolaProbabilita(alternative) {
     const f = p.false || 0
     const o = p.altro || 0
     const sommaRaw = t + f + o
-    if (sommaRaw > 0) {                 // normalizza la singola variante
+    if (sommaRaw > 0) {                 // normalizza la singola ripetizione
       sommaT += t / sommaRaw
       sommaF += f / sommaRaw
       sommaO += o / sommaRaw
@@ -64,6 +67,18 @@ function formattaProbabilita(prob) {
   }
 }
 
+// Semaforo a soglie fisse sull'entropia dell'ensemble: verde sotto 0.33,
+// arancione tra 0.33 e 0.66, rosso sopra — segnala a colpo d'occhio quando
+// il modello è "confuso".
+const SOGLIA_VERDE = 0.33
+const SOGLIA_ARANCIONE = 0.66
+
+function coloreSemaforo(entropia) {
+  if (entropia < SOGLIA_VERDE) return '#2e9e44'
+  if (entropia < SOGLIA_ARANCIONE) return '#f5a623'
+  return '#d0342c'
+}
+
 // Entropia ternaria di Shannon in base 3, così il massimo (esiti equiprobabili) è 1.
 function calcolaEntropia(prob) {
   if (!prob) return null
@@ -76,24 +91,29 @@ function calcolaEntropia(prob) {
 }
 
 export default function App() {
+  const [domanda, setDomanda] = useState('')
+  const [ripetizioni, setRipetizioni] = useState(10)
   const [risultato, setRisultato] = useState(null)
   const [inCaricamento, setInCaricamento] = useState(false)
   const [errore, setErrore] = useState(null)
 
   const handleSubmit = async (e) => {
     e.preventDefault()
+    const testo = domanda.trim()
+    if (!testo) return
 
     setInCaricamento(true)
     setRisultato(null)
     setErrore(null)
 
     try {
-      // Chiede al backend di estrarre una domanda casuale e interrogare il
-      // modello dal vivo (originale + ripetizioni). Puo' impiegare vari secondi.
+      // Chiede al backend di interrogare il modello dal vivo sulla domanda
+      // scritta dall'utente (originale + eventuali parafrasi). Puo' impiegare
+      // vari secondi, soprattutto con molte ripetizioni.
       const res = await fetch(API_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ dataset: 'boolq' }),
+        body: JSON.stringify({ domanda: testo, ripetizioni }),
       })
       if (!res.ok) throw new Error(`Errore dal server (HTTP ${res.status})`)
       const riga = await res.json()
@@ -101,7 +121,6 @@ export default function App() {
 
       const probabilita = calcolaProbabilita(riga.alternative)
       setRisultato({
-        testoDomanda: riga.domanda,
         risposta: calcolaRisposta(probabilita),
         entropia: calcolaEntropia(probabilita),
         probabilita,
@@ -120,8 +139,26 @@ export default function App() {
       <h1>Interfaccia Web</h1>
 
       <form onSubmit={handleSubmit} style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginBottom: '2rem' }}>
-        <button type="submit" disabled={inCaricamento} style={{ padding: '0.4rem 1rem' }}>
-          {inCaricamento ? 'Interrogazione...' : 'Estrai domanda casuale'}
+        <input
+          type="text"
+          value={domanda}
+          onChange={(e) => setDomanda(e.target.value)}
+          placeholder="Scrivi una domanda booleana (in inglese)..."
+          style={{ flex: 1, padding: '0.4rem 0.6rem' }}
+        />
+        <label style={{ display: 'flex', gap: '0.35rem', alignItems: 'center', whiteSpace: 'nowrap' }}>
+          <input
+            type="number"
+            min={1}
+            max={MAX_RIPETIZIONI}
+            value={ripetizioni}
+            onChange={(e) => setRipetizioni(Number(e.target.value))}
+            style={{ width: '4.5rem', padding: '0.4rem' }}
+          />
+          ripetizioni
+        </label>
+        <button type="submit" disabled={inCaricamento || !domanda.trim()} style={{ padding: '0.4rem 1rem' }}>
+          {inCaricamento ? 'Interrogazione...' : 'Chiedi'}
         </button>
       </form>
 
@@ -135,13 +172,6 @@ export default function App() {
         <h2>Risultato</h2>
 
         <div style={{ marginBottom: '1rem' }}>
-          <h3>Testo domanda</h3>
-          <div style={{ padding: '0.75rem', border: '1px solid #ccc', borderRadius: '4px', minHeight: '2rem' }}>
-            {risultato?.testoDomanda ?? <em style={{ color: '#888' }}>nessuna domanda</em>}
-          </div>
-        </div>
-
-        <div style={{ marginBottom: '1rem' }}>
           <h3>Risposta</h3>
           <div style={{ padding: '0.75rem', border: '1px solid #ccc', borderRadius: '4px', minHeight: '2rem' }}>
             {risultato?.risposta ?? <em style={{ color: '#888' }}>nessuna risposta</em>}
@@ -151,12 +181,28 @@ export default function App() {
         <div style={{ marginBottom: '1rem' }}>
           <h3>Entropia (ternaria, log base 3 · range [0, 1])</h3>
           <div style={{ padding: '0.75rem', border: '1px solid #ccc', borderRadius: '4px', minHeight: '2rem' }}>
-            {risultato?.entropia != null ? risultato.entropia.toFixed(4) : <em style={{ color: '#888' }}>nessun valore</em>}
+            {risultato?.entropia != null ? (
+              <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <span
+                  title={`semaforo: verde < ${SOGLIA_VERDE}, arancione < ${SOGLIA_ARANCIONE}, rosso oltre`}
+                  style={{
+                    display: 'inline-block',
+                    width: '0.9rem',
+                    height: '0.9rem',
+                    borderRadius: '50%',
+                    background: coloreSemaforo(risultato.entropia),
+                  }}
+                />
+                {risultato.entropia.toFixed(4)}
+              </span>
+            ) : (
+              <em style={{ color: '#888' }}>nessun valore</em>
+            )}
           </div>
         </div>
 
         <div style={{ marginBottom: '1rem' }}>
-          <h3>Probabilità (aggregata su {risultato?.probabilita?.numAlternative ?? 'N'} ripetizioni)</h3>
+          <h3>Probabilità (ensemble su {risultato?.probabilita?.numAlternative ?? 'N'} ripetizioni)</h3>
           <div style={{ padding: '0.75rem', border: '1px solid #ccc', borderRadius: '4px', minHeight: '2rem' }}>
             {risultato?.probabilita ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>

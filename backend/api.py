@@ -1,10 +1,13 @@
-"""Server HTTP che espone il motore di benchmark all'interfaccia web.
+"""Server HTTP che espone il motore all'interfaccia web (demo chatbox).
 
-Un solo endpoint: ``POST /api/interroga``. Riusa esattamente la stessa logica
-della CLI (``elabora_domanda``): estrae una domanda casuale dal dataset e la
-interroga su un sottoinsieme delle sue varianti (tutte accettate, nessuno
-scarto), restituendo il risultato come JSON. Il modello llama3 viene quindi
-interrogato dal vivo.
+Un solo endpoint: ``POST /api/interroga``. L'utente scrive una domanda
+booleana libera e sceglie quante ripetizioni fare: la prima interrogazione
+usa la domanda cosi' com'e', ognuna delle successive ne interroga una
+parafrasi generata dal modello stesso (come nel benchmark). Ogni esito porta
+la sua distribuzione true/false/altro estratta dai logprobs del primo token;
+l'aggregazione in ensemble (media delle distribuzioni) e' compito del
+frontend. Nessun dataset e nessuna risposta gold: interessa solo che
+distribuzione (e quindi che entropia) produce il modello.
 
 Avvio (da dentro la cartella backend/):
     python api.py
@@ -12,70 +15,119 @@ Il server resta in ascolto su http://localhost:8000
 """
 from __future__ import annotations
 
-import random                          # per estrarre una domanda casuale dal dataset
 from dataclasses import asdict         # converte le dataclass del motore in dizionari serializzabili
 
-from datasets import load_dataset      # caricamento dataset da HuggingFace
 from flask import Flask, jsonify, request  # micro-framework HTTP: app, risposta JSON, body richiesta
 
-from motore import elabora_domanda     # stessa logica usata dalla CLI: tutte le varianti, nessuno scarto
-from specifiche import REGISTRY        # registro {nome_dataset: classe spec} per il design dataset-agnostico
+from motore import Domanda, interroga_e_classifica, parafrasa
+from specifiche.boolq import BoolQSpec  # riusata per classi e mappatura token->classe
 
-# Quante varianti al massimo interrogare per una richiesta live: il benchmark
-# completo (es. 120 permutazioni MC) e' compito della CLI; l'API e' una demo
-# interattiva e deve restare reattiva.
-MAX_VARIANTI_LIVE = 10
+# Quante ripetizioni al massimo per una richiesta live: il benchmark completo
+# e' compito della CLI; l'API e' una demo interattiva e deve restare reattiva.
+MAX_RIPETIZIONI_LIVE = 30
 
-# Istanza dell'applicazione Flask: a questa registriamo gli endpoint con i decoratori.
+
+class DomandaLiberaSpec(BoolQSpec):
+    """Spec demo per la chatbox: stesse classi e stessa mappatura token->classe
+    di BoolQ, ma prompt senza passage (la domanda arriva dall'utente, non dal
+    dataset, quindi non c'e' nessun contesto da leggere)."""
+
+    nome = "domanda-libera"
+
+    def prompt_risposta(self, d: Domanda) -> str:
+        return (
+            "You are a strict question answering assistant.\n"
+            "Your response must be exactly one word: either 'True' or 'False'. "
+            "Do not include any explanations, introductory text, or punctuation.\n\n"
+            f"Question: {d.testo}\n\n"
+            "Answer:"
+        )
+
+
+# Istanza dell'applicazione Flask e spec unica della demo (e' stateless).
 app = Flask(__name__)
-
-# cache dei dataset HuggingFace gia' caricati: {nome_dataset: split}
-# Cosi' non riscarichiamo/ricarichiamo il dataset a ogni click.
-_cache_dataset: dict = {}
+_spec = DomandaLiberaSpec()
 
 
-def _carica_split(spec):
-    # Scarica/carica lo split solo la prima volta; le volte successive riusa la cache.
-    if spec.nome not in _cache_dataset:
-        # spec.hf_id = identificativo HuggingFace, spec.split = es. "validation"/"train"
-        _cache_dataset[spec.nome] = load_dataset(spec.hf_id)[spec.split]
-    return _cache_dataset[spec.nome]
+def _fmt_prob(prob: dict) -> str:
+    """Distribuzione grezza (non normalizzata) di una singola ripetizione, con
+    piena precisione: e' proprio qui che si vede se un token 'True'/'False'
+    porta massa raw < 1 (il resto se ne va nei token fuori vocabolario)."""
+    return " · ".join(f"{c} {p * 100:.6f}%" for c, p in prob.items())
+
+
+def _stampa_ensemble(alternative: list[dict]) -> None:
+    """Riepilogo aggregato uguale al calcolo del frontend: ogni ripetizione e'
+    prima normalizzata per conto suo (massa raw -> distribuzione), poi si fa la
+    media aritmetica. Cosi' si vede da dove esce il valore mostrato a schermo:
+    la media puo' stare ben sotto il 100% anche se ogni singola ripetizione e'
+    quasi certa, se una manciata di parafrasi ribalta la risposta."""
+    somma = {c: 0.0 for c in list(_spec.classi) + ["altro"]}
+    valide = 0
+    for alt in alternative:
+        prob = alt["probabilita"]
+        raw = sum(prob.values())
+        if raw <= 0:
+            continue
+        for c in somma:
+            somma[c] += prob.get(c, 0.0) / raw
+        valide += 1
+    if valide == 0:
+        return
+    media = {c: s / valide for c, s in somma.items()}
+    dettaglio = " · ".join(f"{c} {p * 100:.6f}%" for c, p in media.items())
+    print(f"  ENSEMBLE (media di {valide} ripetizioni normalizzate): {dettaglio}",
+          flush=True)
 
 
 @app.post("/api/interroga")
 def interroga():
-    """Estrae una domanda casuale e la elabora live con il modello.
+    """Interroga il modello live sulla domanda scritta dall'utente.
 
-    Body JSON: {"dataset": "boolq"}  (campo opzionale, default "boolq")
-    Risposta : la RigaBenchmark serializzata (id, domanda, reale,
-               alternative[]).
+    Body JSON: {"domanda": "<testo>", "ripetizioni": N}
+               (``ripetizioni`` opzionale, default 1, limitato a
+               MAX_RIPETIZIONI_LIVE; la prima e' l'originale, le altre N-1
+               sono parafrasi)
+    Risposta : {"domanda": ..., "alternative": [...]} con una Alternativa
+               serializzata per ogni interrogazione riuscita.
     """
     # Legge il body JSON; silent=True evita eccezioni se manca/è malformato -> {}.
     corpo = request.get_json(silent=True) or {}
-    nome = corpo.get("dataset", "boolq")             # nome dataset richiesto, default "boolq"
 
-    # Cerca nel registro la classe spec corrispondente al nome richiesto.
-    spec_cls = REGISTRY.get(nome)
-    if spec_cls is None:
-        # Dataset non registrato: risponde 400 (Bad Request) con l'elenco di quelli validi.
-        return jsonify({
-            "errore": f"dataset '{nome}' sconosciuto",
-            "disponibili": sorted(REGISTRY),
-        }), 400
+    testo = (corpo.get("domanda") or "").strip()
+    if not testo:
+        return jsonify({"errore": "campo 'domanda' mancante o vuoto"}), 400
 
-    spec = spec_cls()                                    # istanzia la spec del dataset
-    dati = _carica_split(spec)                           # ottiene lo split (dalla cache se già caricato)
-    indice = random.randrange(len(dati))                 # estrazione casuale di una domanda
-    # originale + varianti (limitate per reattività), tutte accettate (interroga llama3)
-    riga = elabora_domanda(spec, indice, dati[indice], max_varianti=MAX_VARIANTI_LIVE)
+    try:
+        ripetizioni = int(corpo.get("ripetizioni", 1))
+    except (TypeError, ValueError):
+        return jsonify({"errore": "'ripetizioni' deve essere un numero intero"}), 400
+    ripetizioni = max(1, min(ripetizioni, MAX_RIPETIZIONI_LIVE))
 
-    # Serializza il RigaBenchmark in JSON: asdict trasforma ogni Alternativa (dataclass) in dictionary.
-    return jsonify({
-        "id": riga.id,
-        "domanda": riga.domanda,
-        "reale": riga.reale,
-        "alternative": [asdict(a) for a in riga.alternative],  # originale + varianti
-    })
+    print(f"\n=== Domanda: {testo!r} | {ripetizioni} ripetizioni ===", flush=True)
+
+    originale = Domanda(testo=testo)
+    alternative = []
+    for i in range(ripetizioni):
+        # Come in BoolQSpec.varianti: ogni parafrasi e' generata dall'ORIGINALE
+        # (indipendente, non a catena). Qui senza seed: e' una demo live, non
+        # una run riproducibile.
+        variante = originale if i == 0 else Domanda(testo=parafrasa(testo))
+        alt = interroga_e_classifica(_spec, variante, verbose=False)
+        etichetta = "originale" if i == 0 else "parafrasi"
+        if alt is None:
+            # modello non raggiungibile per questa variante: la salto
+            print(f"  rip {i + 1:2d} [{etichetta}] nessuna risposta dal modello", flush=True)
+            continue
+        print(f"  rip {i + 1:2d} [{etichetta}] {variante.testo!r}", flush=True)
+        print(f"           -> {alt.risposta_pulita} | {_fmt_prob(alt.probabilita)}", flush=True)
+        alternative.append(asdict(alt))
+
+    if not alternative:
+        return jsonify({"errore": "nessuna risposta dal modello (Ollama attivo?)"}), 502
+
+    _stampa_ensemble(alternative)
+    return jsonify({"domanda": testo, "alternative": alternative})
 
 
 # Eseguito solo se lancio il file direttamente (python api.py), non se importato.
