@@ -157,3 +157,28 @@ modello): la versione a 10 parafrasi resta solo nella history.
 | Codice eseguito | Script di lancio del commit `ce6eaaa` (variabile `DATASET`, scp su Thor il 2026-07-31), motore invariato da `bcd2438` salvo `NUM_PARAFRASI = 30` in `config.py` (commit `f90da8b`) — identici al codice in questo commit |
 | Riproducibilità | Come Test 006: risposte deterministiche (argmax sui logprobs del primo token, seed fissato); parafrasi riproducibili solo da server Ollama appena avviato (automatico sul cluster, un'istanza per job). Smoke test non ripetuto: stessa configurazione del Test 006 già validata (cambia solo `NUM_PARAFRASI`) |
 | Verifiche | 3.270 righe (id 1–3270 completi e unici); **31** elementi in `alternative_json` per ogni riga; header a 4 colonne; somma probabilità per variante in [0,971990; 1,000000] su tutte le 101.370 varianti; 0 risposte vuote; chiavi `true/false/altro`; dal log: `library=CUDA` su A100 80GB, "Salvataggio completato", mappatura alias→tag corretta |
+
+## Test 008 — Campagne BoolQ parafrasi (30 ripetizioni) + CommonsenseQA permutazioni con Gemma-3-12B (job unico)
+
+Ultimo modello della tabella multi-modello. Prima campagna di Gemma 3: alias CLI
+descrittivo `--gemma3-12b-it` sul tag Ollama reale `gemma3:12b` (su Ollama il tag
+di default è già la variante instruction-tuned; `gemma3:12b-it` non esiste).
+Job unico su entrambi i dataset, con `NUM_PARAFRASI = 30` già attivo (BoolQ a 31
+varianti per domanda, come il Test 007). Lo smoke pre-lancio (job **46385**,
+2026-07-31) aveva già validato il tokenizer di gemma3 (31 varianti BoolQ / 120
+permutazioni CQA, massa di probabilità ≈ 1, nessuna risposta vuota).
+
+| Campo | Valore |
+|---|---|
+| Risultati | `risultati_boolq_par_gemma3-12b-it.csv` (3.270 righe dati, 25 MB) e `risultati_commonsenseqa_perm_gemma3-12b-it.csv` (1.221 righe dati, 52 MB) |
+| Log | `job_46588.out` (job Slurm **46588** su Thor, partizione `gpu`) — unico log per entrambe le campagne, BoolQ prima |
+| Lancio / fine | 2026-08-02 16:17 → completato (log: "Salvataggio completato" per entrambi i CSV; CSV e log scaricati in locale il 2026-08-10) |
+| Comando | `sbatch sbatch_benchmark.sh --gemma3-12b-it` → `cluster/run_benchmark.sh` con `USE_GPU=1` esegue in sequenza `python run.py boolq /out/risultati_boolq_par_gemma3-12b-it.csv --modello gemma3:12b` e `python run.py commonsenseqa /out/risultati_commonsenseqa_perm_gemma3-12b-it.csv --modello gemma3:12b` (container `benchmark.sif`; alias CLI ≠ tag: riga `Modello: gemma3:12b (suffisso CSV: gemma3-12b-it, campagne: entrambi)` nel log) |
+| Modello | `gemma3:12b` (Gemma 3 12B, variante instruction-tuned di default su Ollama) via Ollama, backend CUDA — stesso modello per risposte e generazione parafrasi (queste solo per BoolQ) |
+| Hardware | 1× Tesla V100-PCIE-32GB (gnode, driver 575.57.08, CUDA 12.9) |
+| Seed | `SEED = 42` (`backend/motore/config.py`) — fissa shuffle dello split e modulo `random`; parafrasi seedate per chiamata (`SEED*1_000_000 + contatore`, vedi `benchmark.py`) |
+| Dataset | BoolQ, split `validation` completo (3.270 domande) + CommonsenseQA, split `validation` completo (1.221 domande, `tau/commonsense_qa`) |
+| Copertura | Percorso unico, nessuno scarto. BoolQ: 1 originale + `NUM_PARAFRASI = 30` parafrasi indipendenti per domanda (101.370 risposte + 98.100 generazioni). CommonsenseQA: tutte le 5! = 120 permutazioni delle opzioni per domanda (146.520 risposte) |
+| Codice eseguito | Script di lancio con variabile `DATASET` (commit `ce6eaaa`) e motore con `NUM_PARAFRASI = 30` (commit `f90da8b`), invariato da `bcd2438` per il resto — identici al codice in questo commit |
+| Riproducibilità | Come Test 007: risposte deterministiche (argmax sui logprobs del primo token, seed fissato); parafrasi BoolQ riproducibili solo da server Ollama appena avviato (automatico sul cluster, un'istanza per job). Smoke test pre-lancio eseguito (job 46385, tokenizer gemma3 validato) |
+| Verifiche | BoolQ: 3.270 righe (id 1–3270 completi e unici), **31** elementi in `alternative_json` per riga, 0 JSON malformati, 0 campi vuoti, risposte solo `true/false`. CommonsenseQA: 1.221 righe (id 1–1221 completi e unici), 120 elementi per riga, risposte solo A–E. Header a 4 colonne su entrambi; somma probabilità per variante in [1,000000; 1,000000] (BoolQ) e [1,000000; 1,000001] (CQA) su tutte le 247.890 varianti; dal log: `library=CUDA` su V100-PCIE-32GB, 3270/3270 e 1221/1221 domande elaborate, "Salvataggio completato" ×2, nessun traceback né errore |
