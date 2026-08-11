@@ -21,9 +21,7 @@ Documentazione/
 .DS_Store
 Thumbs.db
 
-# Screenshot usa-e-getta (richieste del relatore, mai in git)
-Screenshot*.png
-image.png
+*.png
 
 
 # Istruzioni progetto (locali)
