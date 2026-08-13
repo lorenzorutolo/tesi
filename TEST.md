@@ -55,6 +55,11 @@ parafrasi (BoolQ), quindi i test senza parafrasi sono riproducibili end-to-end.
 
 ## Test 003 — Campagna parafrasi BoolQ con Llama 3.1
 
+> **NB (2026-08-13):** questa campagna BoolQ (10 parafrasi) è **superata dal
+> Test 009** (30 parafrasi): i risultati BoolQ@10 non vanno più usati in
+> analisi. Il CommonsenseQA di Llama 3.1 (Test 004) resta valido (non dipende
+> da `NUM_PARAFRASI`).
+
 | Campo | Valore |
 |---|---|
 | Risultati | `risultati_boolq_par_llama3.1-8b.csv` (3.270 righe dati, 9,9 MB) |
@@ -182,3 +187,28 @@ permutazioni CQA, massa di probabilità ≈ 1, nessuna risposta vuota).
 | Codice eseguito | Script di lancio con variabile `DATASET` (commit `ce6eaaa`) e motore con `NUM_PARAFRASI = 30` (commit `f90da8b`), invariato da `bcd2438` per il resto — identici al codice in questo commit |
 | Riproducibilità | Come Test 007: risposte deterministiche (argmax sui logprobs del primo token, seed fissato); parafrasi BoolQ riproducibili solo da server Ollama appena avviato (automatico sul cluster, un'istanza per job). Smoke test pre-lancio eseguito (job 46385, tokenizer gemma3 validato) |
 | Verifiche | BoolQ: 3.270 righe (id 1–3270 completi e unici), **31** elementi in `alternative_json` per riga, 0 JSON malformati, 0 campi vuoti, risposte solo `true/false`. CommonsenseQA: 1.221 righe (id 1–1221 completi e unici), 120 elementi per riga, risposte solo A–E. Header a 4 colonne su entrambi; somma probabilità per variante in [1,000000; 1,000000] (BoolQ) e [1,000000; 1,000001] (CQA) su tutte le 247.890 varianti; dal log: `library=CUDA` su V100-PCIE-32GB, 3270/3270 e 1221/1221 domande elaborate, "Salvataggio completato" ×2, nessun traceback né errore |
+
+## Test 009 — Campagna BoolQ parafrasi a 30 ripetizioni con Llama 3.1-8B
+
+Rifacimento del solo BoolQ del Test 003 con `NUM_PARAFRASI = 30`: **sostituisce
+il BoolQ@10 del Test 003** (Llama 3.1), che da qui in poi è deprecato. Il
+CommonsenseQA di Llama 3.1 resta quello del Test 004 (le permutazioni non
+dipendono da `NUM_PARAFRASI`). Campagna a dataset singolo via variabile
+`DATASET` di `run_benchmark.sh`, come il Test 007. Il CSV ha lo stesso nome di
+quello del Test 003 (stesso alias modello): la versione a 10 parafrasi resta
+solo nella history.
+
+| Campo | Valore |
+|---|---|
+| Risultati | `risultati_boolq_par_llama3.1-8b.csv` (3.270 righe dati, 27,7 MB) |
+| Log | `job_47751.out` (job Slurm **47751** su Thor, partizione `gpu`) — sola campagna BoolQ |
+| Lancio / fine | 2026-08-10 23:33 → completato (log: "Salvataggio completato"; CSV e log scaricati in locale il 2026-08-13) |
+| Comando | `DATASET=boolq sbatch sbatch_benchmark.sh --llama3.1-8b` → `cluster/run_benchmark.sh` con `USE_GPU=1` esegue solo `python run.py boolq /out/risultati_boolq_par_llama3.1-8b.csv --modello llama3.1:8b` (container `benchmark.sif`; alias CLI = suffisso CSV ma ≠ tag: riga `Modello: llama3.1:8b (suffisso CSV: llama3.1-8b, campagne: boolq)` nel log) |
+| Modello | `llama3.1:8b` (Llama 3.1 8B) via Ollama, backend CUDA — stesso modello per risposte e generazione parafrasi |
+| Hardware | 1× Tesla V100-PCIE-32GB (gnode, driver 575.57.08, CUDA 12.9) |
+| Seed | `SEED = 42` (`backend/motore/config.py`) — fissa shuffle dello split e modulo `random`; parafrasi seedate per chiamata (`SEED*1_000_000 + contatore`, vedi `benchmark.py`) |
+| Dataset | BoolQ, split `validation` completo (3.270 domande). CommonsenseQA NON rieseguito: vale quello del Test 004 (le permutazioni non dipendono da `NUM_PARAFRASI`) |
+| Copertura | Percorso unico, nessuno scarto: per ogni domanda 1 originale + `NUM_PARAFRASI = 30` parafrasi indipendenti (101.370 risposte + 98.100 generazioni, ~3× il BoolQ del Test 003) |
+| Codice eseguito | Script di lancio con variabile `DATASET` (commit `ce6eaaa`) e motore con `NUM_PARAFRASI = 30` (commit `f90da8b`), invariato da `bcd2438` per il resto — identici al codice in questo commit |
+| Riproducibilità | Come Test 007/008: risposte deterministiche (argmax sui logprobs del primo token, seed fissato); parafrasi riproducibili solo da server Ollama appena avviato (automatico sul cluster, un'istanza per job). Smoke test non ripetuto: stessa configurazione dei Test 003/005 già validata (cambiano solo `NUM_PARAFRASI` e il dataset singolo) |
+| Verifiche | 3.270 righe (id 1–3270 completi e unici); **31** elementi in `alternative_json` per ogni riga; header a 4 colonne; risposte solo `true/false`; 0 JSON malformati, 0 campi vuoti; somma probabilità per variante in [0,888284; 1,000001] su tutte le 101.370 varianti; dal log: `library=CUDA` su V100-PCIE-32GB, 3270/3270 domande elaborate, "Salvataggio completato", nessun traceback né errore |
