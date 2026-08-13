@@ -66,13 +66,13 @@ Vite inoltra le chiamate `/api/*` al backend su `:8000` (proxy in `vite.config.j
 | BoolQ (true/false) | `google/boolq` | 12.697 | `train` (9.427), `validation` (3.270) | `validation` | `true` 2.033 (62,2%), `false` 1.237 (37,8%) |
 | CommonsenseQA (multiple-choice, 5 opzioni) | `tau/commonsense_qa` | 12.102 | `train` (9.741), `validation` (1.221), `test` (1.140) | `validation` | `A` 239 (19,6%), `B` 255 (20,9%), `C` 241 (19,7%), `D` 251 (20,6%), `E` 235 (19,2%) |
 
-> La distribuzione delle classi si riferisce all'intero split `validation`. Per BoolQ il benchmark ne usa un sottoinsieme di 3.000 domande (vedi sotto), la cui distribuzione è pressoché identica: `true` 1.864 (62,1%), `false` 1.136 (37,9%). Nota lo sbilanciamento di BoolQ verso `true` (~62%) — un modello che rispondesse sempre `true` otterrebbe già quell'accuratezza — mentre CommonsenseQA è quasi uniforme sulle 5 lettere (~20% ciascuna), quindi ogni preferenza sistematica del modello per certe lettere è bias di posizione, non del dataset.
+> La distribuzione delle classi si riferisce all'intero split `validation`, che il benchmark usa per intero (3.270 domande per BoolQ, 1.221 per CommonsenseQA). Nota lo sbilanciamento di BoolQ verso `true` (~62%) — un modello che rispondesse sempre `true` otterrebbe già quell'accuratezza — mentre CommonsenseQA è quasi uniforme sulle 5 lettere (~20% ciascuna), quindi ogni preferenza sistematica del modello per certe lettere è bias di posizione, non del dataset.
 
 **Perché lo split `validation`.** Per entrambi i dataset le etichette del test set non sono pubbliche: per CommonsenseQA lo split `test` esiste su HuggingFace ma ha `answerKey` vuoto, per BoolQ il test (~3.245 domande del paper originale) non è proprio incluso nella versione HF. Lo split `train` servirebbe al fine-tuning (che qui non facciamo) ed è anche il più esposto a contaminazione nei dati di pre-training dei modelli. `validation` è quindi l'unico split held-out con le risposte note, ed è la convenzione in letteratura per i risultati zero-shot: i numeri restano confrontabili con quelli pubblicati.
 
 **Come funziona una run.** Percorso unico per tutti i dataset: il motore mescola lo split con seed fisso (`SEED` in `motore/config.py`) e, per ogni domanda, interroga il modello su **tutte le varianti** fornite dalla spec, una volta ciascuna, **tutte accettate** — niente risposta di riferimento, niente retry, niente scarti a runtime (eventuali scarti si fanno a tempo di analisi del CSV). Default: tutte le domande dello split (override con `--num`):
 
-- **BoolQ**: 3.270 domande × (1 originale + `NUM_PARAFRASI = 10` parafrasi). Le parafrasi sono generate dal modello **sempre a partire dall'originale** (indipendenti, non a catena) con un **seed Ollama deterministico per chiamata** (derivato da `SEED`): stessa run → stesse parafrasi.
+- **BoolQ**: 3.270 domande × (1 originale + `NUM_PARAFRASI = 30` parafrasi). Le parafrasi sono generate dal modello **sempre a partire dall'originale** (indipendenti, non a catena) con un **seed Ollama deterministico per chiamata** (derivato da `SEED`): stessa run → stesse parafrasi.
 - **CommonsenseQA**: 1.221 domande × tutte le 5! = 120 permutazioni dell'ordine delle opzioni (enumerate, originale per prima).
 
 Con `SEED` fissato la run è quindi riproducibile end-to-end: varianti deterministiche e risposte deterministiche (argmax sui logprobs del primo token, indipendente dalla temperatura). Per le parafrasi la condizione (verificata empiricamente) è rieseguire **da server Ollama appena avviato** — la cache dei prompt di richieste precedenti può alterare la generazione a parità di seed — oltre alla parità di versione/hardware; sul cluster è la condizione naturale, dato che ogni job avvia la propria istanza. Riserva teorica residua: non-determinismo floating-point su GPU nei quasi-pareggi.
@@ -100,7 +100,7 @@ id,domanda,reale,alternative_json
 
 ## Struttura di `alternative_json`
 
-È una **lista JSON** con una entry per variante interrogata (11 per BoolQ, 120 per CommonsenseQA).
+È una **lista JSON** con una entry per variante interrogata (31 per BoolQ, 120 per CommonsenseQA).
 
 - L'**indice 0** è sempre la domanda originale.
 - Gli indici successivi sono le varianti (parafrasi per BoolQ, permutazioni per il multiple-choice), **tutte registrate qualunque sia la risposta**: se una variante fa cambiare idea al modello resta nel CSV — decidere come trattare questi *flip* è compito dell'analisi, non del motore.
@@ -142,7 +142,7 @@ python backend/estrai_matrici.py risultati_boolq_par.csv   # -> matrici_boolq_pa
 | Colonna             | Tipo    | Significato                                                                                                   |
 | ------------------- | ------- | -------------------------------------------------------------------------------------------------------------- |
 | `id`                | `int`   | Id della domanda                                                                                                |
-| `matrice`           | `str`   | Matrice delle distribuzioni come lista annidata JSON: una riga interna per ripetizione (originale per prima, poi le varianti nell'ordine del CSV sorgente: 11 per BoolQ, 120 per CommonsenseQA), una colonna interna per classe con `altro` per ultima (BoolQ `true,false,altro`; CommonsenseQA `A,B,C,D,E,altro`) |
+| `matrice`           | `str`   | Matrice delle distribuzioni come lista annidata JSON: una riga interna per ripetizione (originale per prima, poi le varianti nell'ordine del CSV sorgente: 31 per BoolQ, 120 per CommonsenseQA), una colonna interna per classe con `altro` per ultima (BoolQ `true,false,altro`; CommonsenseQA `A,B,C,D,E,altro`) |
 | `colonna_corretta`  | `int`   | Indice **0-based** della colonna della matrice corrispondente alla risposta gold                               |
 
 Esempio (BoolQ, colonne interne `true,false,altro`):
