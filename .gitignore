@@ -11,9 +11,6 @@ matrici_*.csv
 # Claude Code config locale
 .claude/
 
-# Output graphify
-graphify-out/
-
 # Documentazione PDF
 Documentazione/
 
