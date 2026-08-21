@@ -94,6 +94,11 @@ parafrasi (BoolQ), quindi i test senza parafrasi sono riproducibili end-to-end.
 
 ## Test 005 — Campagne BoolQ parafrasi + CommonsenseQA permutazioni con Qwen2.5-14B-Instruct (job unico)
 
+> **NB (2026-08-18):** la campagna BoolQ di questa scheda (10 parafrasi) è
+> **superata dal Test 010** (30 parafrasi): i risultati BoolQ@10 non vanno più
+> usati in analisi. Il CommonsenseQA di questa scheda resta valido (non dipende
+> da `NUM_PARAFRASI`).
+
 Primo test con la nuova convenzione (dal commit `14207b5`): **1 job = 1 modello =
 entrambe le campagne**, un solo commit con 2 CSV + 1 log + questa scheda.
 
@@ -212,3 +217,27 @@ solo nella history.
 | Codice eseguito | Script di lancio con variabile `DATASET` (commit `ce6eaaa`) e motore con `NUM_PARAFRASI = 30` (commit `f90da8b`), invariato da `bcd2438` per il resto — identici al codice in questo commit |
 | Riproducibilità | Come Test 007/008: risposte deterministiche (argmax sui logprobs del primo token, seed fissato); parafrasi riproducibili solo da server Ollama appena avviato (automatico sul cluster, un'istanza per job). Smoke test non ripetuto: stessa configurazione dei Test 003/005 già validata (cambiano solo `NUM_PARAFRASI` e il dataset singolo) |
 | Verifiche | 3.270 righe (id 1–3270 completi e unici); **31** elementi in `alternative_json` per ogni riga; header a 4 colonne; risposte solo `true/false`; 0 JSON malformati, 0 campi vuoti; somma probabilità per variante in [0,888284; 1,000001] su tutte le 101.370 varianti; dal log: `library=CUDA` su V100-PCIE-32GB, 3270/3270 domande elaborate, "Salvataggio completato", nessun traceback né errore |
+
+## Test 010 — Campagna BoolQ parafrasi a 30 ripetizioni con Qwen2.5-14B-Instruct
+
+Ultima campagna del ciclo: rifacimento del solo BoolQ del Test 005 con
+`NUM_PARAFRASI = 30`, che **sostituisce il BoolQ@10 del Test 005** (Qwen2.5),
+da qui in poi deprecato. Il CommonsenseQA di Qwen2.5 resta quello del Test 005
+(le permutazioni non dipendono da `NUM_PARAFRASI`). Con questo test tutti e
+quattro i modelli hanno BoolQ@30 + CommonsenseQA@120: le otto campagne usate in
+tesi sono complete.
+
+| Campo | Valore |
+|---|---|
+| Risultati | `risultati_boolq_par_qwen2.5-14b-instruct.csv` (3.270 righe dati, 25,2 MB) |
+| Log | `job_48850.out` (job Slurm **48850** su Thor, partizione `gpu`) — sola campagna BoolQ |
+| Lancio / fine | 2026-08-13 14:44 → completato (log: "Salvataggio completato"; CSV e log scaricati in locale il 2026-08-18) |
+| Comando | `DATASET=boolq sbatch sbatch_benchmark.sh --qwen2.5-14b-instruct` → `cluster/run_benchmark.sh` con `USE_GPU=1` esegue solo `python run.py boolq /out/risultati_boolq_par_qwen2.5-14b-instruct.csv --modello qwen2.5:14b-instruct` (container `benchmark.sif`; riga `Modello: qwen2.5:14b-instruct (suffisso CSV: qwen2.5-14b-instruct, campagne: boolq)` nel log) |
+| Modello | `qwen2.5:14b-instruct` (Qwen2.5 14B Instruct) via Ollama, backend CUDA — stesso modello per risposte e generazione parafrasi |
+| Hardware | 1× Tesla V100-PCIE-32GB (gnode, driver 575.57.08, CUDA 12.9) |
+| Seed | `SEED = 42` (`backend/motore/config.py`) — fissa shuffle dello split e modulo `random`; parafrasi seedate per chiamata (`SEED*1_000_000 + contatore`, vedi `benchmark.py`) |
+| Dataset | BoolQ, split `validation` completo (3.270 domande). CommonsenseQA NON rieseguito: vale quello del Test 005 |
+| Copertura | Percorso unico, nessuno scarto: per ogni domanda 1 originale + `NUM_PARAFRASI = 30` parafrasi indipendenti (101.370 risposte + 98.100 generazioni) |
+| Codice eseguito | Stesso codice del Test 009: script di lancio con variabile `DATASET` (commit `ce6eaaa`) e motore con `NUM_PARAFRASI = 30` (commit `f90da8b`) — identici al codice in questo commit |
+| Riproducibilità | Come Test 007/008/009: risposte deterministiche (argmax sui logprobs del primo token, seed fissato); parafrasi riproducibili solo da server Ollama appena avviato (automatico sul cluster, un'istanza per job). Smoke test non ripetuto: stessa configurazione del Test 005 già validata (cambiano solo `NUM_PARAFRASI` e il dataset singolo) |
+| Verifiche | 3.270 righe (id 1–3270 completi e unici); **31** elementi in `alternative_json` per ogni riga; header a 4 colonne; risposte solo `true`/`false` (48.059 / 53.311 sulle 101.370 varianti); 0 JSON malformati, 0 campi vuoti; somma probabilità per variante in [0,9999997; 1,0000002]; dal log: `library=CUDA` su V100-PCIE-32GB, "Elaborazione Domanda 3270/3270" e "Salvataggio completato", nessun traceback |
