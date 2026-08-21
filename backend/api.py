@@ -96,12 +96,12 @@ def interroga():
 
     testo = (corpo.get("domanda") or "").strip()
     if not testo:
-        return jsonify({"errore": "campo 'domanda' mancante o vuoto"}), 400
+        return jsonify({"errore": "missing or empty 'domanda' field"}), 400
 
     try:
         ripetizioni = int(corpo.get("ripetizioni", 1))
     except (TypeError, ValueError):
-        return jsonify({"errore": "'ripetizioni' deve essere un numero intero"}), 400
+        return jsonify({"errore": "'ripetizioni' must be an integer"}), 400
     ripetizioni = max(1, min(ripetizioni, MAX_RIPETIZIONI_LIVE))
 
     print(f"\n=== Domanda: {testo!r} | {ripetizioni} ripetizioni ===", flush=True)
@@ -124,7 +124,7 @@ def interroga():
         alternative.append(asdict(alt))
 
     if not alternative:
-        return jsonify({"errore": "nessuna risposta dal modello (Ollama attivo?)"}), 502
+        return jsonify({"errore": "no answer from the model (is Ollama running?)"}), 502
 
     _stampa_ensemble(alternative)
     return jsonify({"domanda": testo, "alternative": alternative})

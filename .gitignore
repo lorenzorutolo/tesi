@@ -2,11 +2,14 @@
 risultati_commonsenseqa_perm.csv
 risultati_boolq_par.csv
 
+# CSV derivati (light e filtrati): si rigenerano al bisogno, mai in git
+matrici_*.csv
+*_light_*.csv
+*_filtrato.csv
+*_coerenti.csv
+
 # Claude Code config locale
 .claude/
-
-# Output graphify
-graphify-out/
 
 # Documentazione PDF
 Documentazione/
@@ -15,15 +18,14 @@ Documentazione/
 .DS_Store
 Thumbs.db
 
+*.png
+
 
 # Istruzioni progetto (locali)
 CLAUDE.md
 
 # Hand-off di sessione (locale)
 HANDOFF.md
-
-# Setup esecuzione su cluster Thor (locale)
-cluster/
 
 grafici_output/
 

@@ -1,0 +1,4 @@
+# Script e definizioni container eseguiti su Linux (scp verso il cluster):
+# sempre LF nel working tree, anche su Windows (CRLF rompe bash e Apptainer).
+*.sh text eol=lf
+*.def text eol=lf
