@@ -1,45 +1,48 @@
-# Output dei benchmark
-risultati_commonsenseqa_perm.csv
-risultati_boolq_par.csv
+# --- Risultati delle campagne di benchmark ---------------------------------
+# I CSV e i log dei job non stanno sul branch di consegna: vivono nel branch
+# `test`, un commit per campagna (vedi TEST.md lì).
+risultati_*.csv
+job_*.out
+test/
 
-# CSV derivati (light e filtrati): si rigenerano al bisogno, mai in git
+# CSV derivati (matrici, light, filtrati): si rigenerano al bisogno
 matrici_*.csv
 *_light_*.csv
 *_filtrato.csv
 *_coerenti.csv
 
-# Claude Code config locale
-.claude/
-
-# Documentazione PDF
+# --- Materiale locale della scrittura --------------------------------------
+# Deliverable, sorgenti LaTeX e PDF della tesi
 Documentazione/
-
-# File temporanei OS
-.DS_Store
-Thumbs.db
-
+# Figure prodotte dagli script di analisi
+grafici_output/
 *.png
+# Script di analisi one-shot e loro output, legati ai risultati locali
+backend/tabella_filtro.py
+backend/grafico_au_eu_modelli.py
+FILTRO_CONVERGENZA.md
+# Template e modulistica scaricati dal sito SUPSI
+scaricati*/
 
-
-# Istruzioni progetto (locali)
+# --- Strumenti e config locali ---------------------------------------------
+.claude/
 CLAUDE.md
-
-# Hand-off di sessione (locale)
 HANDOFF.md
 
-grafici_output/
-
-# Python
+# --- Python ----------------------------------------------------------------
 __pycache__/
 *.pyc
 *.pyo
 .venv/
 venv/
 
-# Node / frontend
+# --- Node / frontend -------------------------------------------------------
 frontend/node_modules/
 frontend/dist/
 frontend/.vite/
-
 # package-lock.json orfano alla root (quello legittimo sta in frontend/)
 /package-lock.json
+
+# --- File temporanei OS ----------------------------------------------------
+.DS_Store
+Thumbs.db

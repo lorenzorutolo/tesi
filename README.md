@@ -21,7 +21,6 @@ che serve per orientarsi nel repository e far girare il codice.
 │   ├── run.py                    # Entry point CLI: python backend/run.py <dataset>
 │   ├── api.py                    # Server HTTP (Flask) per l'interfaccia web
 │   ├── generatore_grafici.py     # Analisi delle campagne e figure
-│   ├── grafico_au_eu_modelli.py  # Scomposizione AU/EU con insieme credale sui modelli
 │   ├── estrai_matrici.py         # CSV completo -> CSV compatto "matrici"
 │   ├── filtra_matrici.py         # Filtro delle varianti stabili sul CSV "matrici"
 │   └── requirements.txt          # Dipendenze Python del backend
@@ -34,9 +33,8 @@ che serve per orientarsi nel repository e far girare il codice.
 │       └── App.jsx
 ├── cluster/                      # Esecuzione su HPC: definizioni Apptainer e script Slurm
 │   └── README.md                 # Istruzioni specifiche del cluster
-├── Documentazione/               # Deliverable e sorgenti LaTeX della tesi
-│   └── latex/                    # tesi.tex, classe SUPSI, bibliografia, immagini
-└── TEST.md                       # Registro delle campagne di benchmark eseguite
+└── Documentazione/               # Deliverable e sorgenti LaTeX della tesi
+    └── latex/                    # tesi.tex, classe SUPSI, bibliografia, immagini
 ```
 
 Il backend ha **due consumatori dello stesso motore**: la CLI batch
