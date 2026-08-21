@@ -1172,8 +1172,8 @@ if "--tesi" in _opzioni and not IN_COLAB:
             salva_tesi(fig, "cap6_pearson_heatmap.png", extra=True)
 
         # --- 6.4 griglie 2x2 delle curve accuracy-rejection ----------------
-        def griglia_rejection(dataset, nome_file):
-            ps = [p for p in campagne_di(dataset) if dati_curve.get((p, False))]
+        def griglia_rejection(dataset, nome_file, filtrato=False):
+            ps = [p for p in campagne_di(dataset) if dati_curve.get((p, filtrato))]
             if len(ps) < 2:
                 return
             righe = int(math.ceil(len(ps) / 2))
@@ -1181,7 +1181,7 @@ if "--tesi" in _opzioni and not IN_COLAB:
                                      sharex=True, squeeze=False)
             piatti = axes.ravel()
             for ax, p in zip(piatti, ps):
-                d = dati_curve[(p, False)]
+                d = dati_curve[(p, filtrato)]
                 ax.fill_between(FRAZIONI_RIFIUTATE, d["casuale_min"],
                                 d["casuale_max"], color="0.55", alpha=0.30,
                                 linewidth=0,
@@ -1212,6 +1212,12 @@ if "--tesi" in _opzioni and not IN_COLAB:
 
         griglia_rejection("BoolQ", "cap6_rejection_boolq.png")
         griglia_rejection("CommonsenseQA", "cap6_rejection_csqa.png")
+        # Stesse griglie nel regime filtrato, per il confronto della sezione
+        # sull'impatto della selezione delle varianti stabili.
+        griglia_rejection("BoolQ", "cap6_rejection_boolq_filtrato.png",
+                          filtrato=True)
+        griglia_rejection("CommonsenseQA", "cap6_rejection_csqa_filtrato.png",
+                          filtrato=True)
 
         # --- 6.4 guadagno di area sul rifiuto casuale ----------------------
         if any(dati_curve.get((p, False)) for p in PERCORSI):
