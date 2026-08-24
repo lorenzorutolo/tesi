@@ -301,6 +301,12 @@ if "--solo-filtrato" in _opzioni:
 elif "--solo-non-filtrato" in _opzioni:
     FILTRI = (False,)
 
+# Regime su cui lavora il Capitolo 6 della tesi: le campagne filtrate, come nel
+# paper di riferimento. Vale per le figure di --tesi, per le tabelle LaTeX
+# stampate a fine analisi e per la media sulle varianti del confronto fra
+# modelli. Il regime non filtrato resta calcolato e visibile nella galleria.
+REGIME_TESI = True
+
 if IN_COLAB:
     print("Seleziona i CSV con i risultati del benchmark:")
     uploaded = files.upload()
@@ -574,6 +580,13 @@ def grafico_accuracy_rejection(descr, titolo, descrittori=DESCRITTORI_PAPER,
           + "  ".join(f"{e.replace('$', '')} {a:.4f} ({a - area_casuale:+.4f})"
                       for a, e in sorted(aree, reverse=True)))
 
+    # Accuratezza a un rifiuto del 40%: e' il punto che il Capitolo 6 cita per
+    # dare una misura concreta di quanto renda l'astensione.
+    _i40 = int(np.argmin(np.abs(FRAZIONI_RIFIUTATE - 0.40)))
+    print(f"    accuratezza rifiutando il {FRAZIONI_RIFIUTATE[_i40]:.0%}: "
+          + "  ".join(f"{e.replace('$', '')} {curve_per_chiave[c][_i40]:.4f}"
+                      for e, c, _, _ in descrittori if c in curve_per_chiave))
+
     ax.set_title(titolo, pad=15, fontsize=11)
     ax.set_xlabel("Frazione di domande rifiutate (dal descrittore più alto)")
     ax.set_ylabel("Accuratezza sulle domande tenute (maggioranza)")
@@ -652,18 +665,27 @@ for percorso in PERCORSI:
               f"{classi_per_dataset[dataset]} vs {camp.classi}")
     classi_per_dataset.setdefault(dataset, camp.classi)
 
-    # Dati leggeri per la sezione [7], calcolati una volta sola: non dipendono
-    # dal filtro, perche' la riga 0 sopravvive sempre al filtro. La media si fa
-    # sul numero di varianti minimo comune al dataset (e sul taglio --x, se
-    # c'e'): mediare su 30 parafrasi per un modello e su 10 per un altro non
+    # Dati leggeri per la sezione [7], calcolati una volta sola. La riga delle
+    # risposte originali non dipende dal filtro, perche' la riga 0 sopravvive
+    # sempre; la media sulle varianti invece si', ed e' calcolata nel regime
+    # scelto per la tesi (REGIME_TESI). Il troncamento al numero di varianti
+    # minimo comune al dataset (e al taglio --x, se c'e') vale in entrambi i
+    # casi: mediare su 30 parafrasi per un modello e su 10 per un altro non
     # sarebbe un confronto alla pari.
     n_comune = minimo_varianti[dataset]
     if X_VARIANTI is not None:
         n_comune = min(n_comune, X_VARIANTI + 1)
     originali_per_modello.setdefault(dataset, {})[camp.modello] = {
         r["id"]: (r["matrice"][0], r["reale"]) for r in camp.righe}
+
+    def _media_varianti(P):
+        Q = P[:n_comune]
+        if REGIME_TESI:
+            Q = filtra_matrice(Q)
+        return Q.mean(axis=0)
+
     medie_per_modello.setdefault(dataset, {})[camp.modello] = {
-        r["id"]: (r["matrice"][:n_comune].mean(axis=0), r["reale"])
+        r["id"]: (_media_varianti(r["matrice"]), r["reale"])
         for r in camp.righe}
 
     for filtrato in FILTRI:
@@ -1095,11 +1117,11 @@ if "--tesi" in _opzioni and not IN_COLAB:
             fig, axes = plt.subplots(1, len(DATASET_TESI), figsize=(9.2, 3.9),
                                      sharey=True, squeeze=False)
             for ax, dataset in zip(axes[0], DATASET_TESI):
-                ps = [p for p in campagne_di(dataset) if (p, False) in accuratezze]
+                ps = [p for p in campagne_di(dataset) if (p, REGIME_TESI) in accuratezze]
                 x = np.arange(len(ps))
                 larghezza = 0.26
                 for i, (chiave, etichetta, colore) in enumerate(COLORI_LIVELLI):
-                    valori = [accuratezze[(p, False)][chiave] for p in ps]
+                    valori = [accuratezze[(p, REGIME_TESI)][chiave] for p in ps]
                     barre = ax.bar(x + (i - 1) * larghezza, valori, larghezza,
                                    color=colore, label=etichetta)
                     ax.bar_label(barre, labels=[_it(v, 1) for v in valori],
@@ -1126,9 +1148,9 @@ if "--tesi" in _opzioni and not IN_COLAB:
 
         # --- 6.3 heatmap di Pearson ---------------------------------------
         colonne = [p for d in DATASET_TESI for p in campagne_di(d)
-                   if (p, False) in pearson]
+                   if (p, REGIME_TESI) in pearson]
         if colonne:
-            M = np.array([[pearson[(p, False)][chiave] for p in colonne]
+            M = np.array([[pearson[(p, REGIME_TESI)][chiave] for p in colonne]
                           for chiave, _ in ETICHETTE_HEATMAP])
             fig, ax = plt.subplots(figsize=(9.2, 4.6))
             im = ax.imshow(M, cmap="RdBu_r", vmin=-0.5, vmax=0.5, aspect="auto")
@@ -1172,7 +1194,7 @@ if "--tesi" in _opzioni and not IN_COLAB:
             salva_tesi(fig, "cap6_pearson_heatmap.png", extra=True)
 
         # --- 6.4 griglie 2x2 delle curve accuracy-rejection ----------------
-        def griglia_rejection(dataset, nome_file, filtrato=False):
+        def griglia_rejection(dataset, nome_file, filtrato=REGIME_TESI):
             ps = [p for p in campagne_di(dataset) if dati_curve.get((p, filtrato))]
             if len(ps) < 2:
                 return
@@ -1212,24 +1234,19 @@ if "--tesi" in _opzioni and not IN_COLAB:
 
         griglia_rejection("BoolQ", "cap6_rejection_boolq.png")
         griglia_rejection("CommonsenseQA", "cap6_rejection_csqa.png")
-        # Stesse griglie nel regime filtrato, per il confronto della sezione
-        # sull'impatto della selezione delle varianti stabili.
-        griglia_rejection("BoolQ", "cap6_rejection_boolq_filtrato.png",
-                          filtrato=True)
-        griglia_rejection("CommonsenseQA", "cap6_rejection_csqa_filtrato.png",
-                          filtrato=True)
 
         # --- 6.4 guadagno di area sul rifiuto casuale ----------------------
-        if any(dati_curve.get((p, False)) for p in PERCORSI):
+        if any(dati_curve.get((p, REGIME_TESI)) for p in PERCORSI):
             fig, axes = plt.subplots(1, len(DATASET_TESI), figsize=(9.2, 3.6),
                                      sharey=True, squeeze=False)
             for ax, dataset in zip(axes[0], DATASET_TESI):
-                ps = [p for p in campagne_di(dataset) if dati_curve.get((p, False))]
+                ps = [p for p in campagne_di(dataset) if dati_curve.get((p, REGIME_TESI))]
                 x = np.arange(len(ps))
                 larghezza = 0.16
                 for i, (etichetta, chiave, colore, stile) in enumerate(DESCRITTORI_PAPER):
-                    valori = [dati_curve[(p, False)]["aree"][chiave]
-                              - dati_curve[(p, False)]["area_casuale"] for p in ps]
+                    valori = [dati_curve[(p, REGIME_TESI)]["aree"][chiave]
+                              - dati_curve[(p, REGIME_TESI)]["area_casuale"]
+                              for p in ps]
                     ax.bar(x + (i - 2) * larghezza, valori, larghezza,
                            color=colore, label=etichetta, edgecolor="white",
                            linewidth=0.5,
@@ -1296,7 +1313,7 @@ if "--tesi" in _opzioni and not IN_COLAB:
 
         # --- 6.6 la coppia a divergenza massima ----------------------------
         p_esempio = campagna_esempio("BoolQ")
-        voce = coppie_max_kl.get((p_esempio, False)) if p_esempio else None
+        voce = coppie_max_kl.get((p_esempio, REGIME_TESI)) if p_esempio else None
         if voce:
             kl, riga, i, j, M = voce
             classi = classi_per_dataset[nome_dataset(p_esempio)]
