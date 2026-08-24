@@ -32,7 +32,6 @@ che serve per orientarsi nel repository e far girare il codice.
 │       ├── main.jsx
 │       └── App.jsx
 ├── cluster/                      # Esecuzione su HPC: definizioni Apptainer e script Slurm
-│   └── README.md                 # Istruzioni specifiche del cluster
 └── Documentazione/               # Deliverable e sorgenti LaTeX della tesi
     └── latex/                    # tesi.tex, classe SUPSI, bibliografia, immagini
 ```

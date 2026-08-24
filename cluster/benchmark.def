@@ -6,7 +6,7 @@ From: python:3.12-slim
 # (bind), cosi' modifiche al codice non richiedono di ricostruire il .sif.
 #
 # NB: il path SORGENTE di %files e' relativo alla cartella da cui si lancia
-#     `apptainer build` -> costruire dalla ROOT del repo (vedi README.md).
+#     `apptainer build` -> costruire dalla ROOT del repo.
 # NB2: la destinazione NON deve stare in /tmp: durante %post Apptainer monta il
 #     /tmp dell'host sopra quello del container, nascondendo il file. Usiamo /opt.
 # Se python:3.12-slim desse errori di build su qualche wheel, usare python:3.12.
